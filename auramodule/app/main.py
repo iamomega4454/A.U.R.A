@@ -123,11 +123,23 @@ def stream_ollama_pull(model_name: str) -> bool:
         spinner = ['|', '/', '-', '\\']
         spinner_idx = 0
         
+        message_counts = {}
+        last_message = None
+        last_count = 0
+        
         for line in process.stdout:
             line = line.strip()
             
             if "pulling manifest" in line.lower():
-                print(f"  {BLUE}›{RESET} Pulling manifest...")
+                msg = "Pulling manifest..."
+                if msg != last_message:
+                    if last_message and last_count > 1:
+                        print(f"  {BLUE}›{RESET} {last_message}(x{last_count})")
+                    print(f"  {BLUE}›{RESET} {msg}")
+                    last_message = msg
+                    last_count = 1
+                else:
+                    last_count += 1
             elif "downloading" in line.lower():
                 if "layer" in line.lower():
                     if "/" in line:
@@ -158,14 +170,34 @@ def stream_ollama_pull(model_name: str) -> bool:
                     last_update = time.time()
                     
             elif "verifying" in line.lower():
-                print(f"\n  {BLUE}›{RESET} Verifying checksum...")
+                msg = "Verifying checksum..."
+                if msg != last_message:
+                    if last_message and last_count > 1:
+                        print(f"  {BLUE}›{RESET} {last_message}(x{last_count})")
+                    print(f"  {BLUE}›{RESET} {msg}")
+                    last_message = msg
+                    last_count = 1
+                else:
+                    last_count += 1
             elif "writing" in line.lower():
-                print(f"\n  {BLUE}›{RESET} Writing to model storage...")
+                msg = "Writing to model storage..."
+                if msg != last_message:
+                    if last_message and last_count > 1:
+                        print(f"  {BLUE}›{RESET} {last_message}(x{last_count})")
+                    print(f"  {BLUE}›{RESET} {msg}")
+                    last_message = msg
+                    last_count = 1
+                else:
+                    last_count += 1
         
+        if last_message and last_count > 1:
+            print(f"  {BLUE}›{RESET} {last_message}(x{last_count})")
+            
         process.wait()
         print()  
         
         if process.returncode == 0:
+            print_status("●", f"{model_name} downloaded successfully")
             return True
         return False
         
@@ -261,7 +293,7 @@ def check_ollama():
 
 
 #------This Function checks InsightFace model----------
-def check_models():
+def check_models() -> bool:
     print_section("ML Models")
     
     print(f"  {BLUE}›{RESET} Checking InsightFace/buffalo_l...")
@@ -273,6 +305,7 @@ def check_models():
         app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
         app.prepare(ctx_id=0, det_size=(640, 640))
         print_status("●", "buffalo_l face recognition model ready")
+        return True
         
     except ImportError:
         print_status("●", "InsightFace not installed", YELLOW)
@@ -290,11 +323,12 @@ def check_models():
             app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
             app.prepare(ctx_id=0, det_size=(640, 640))
             print_status("●", "buffalo_l face recognition model ready")
+            return True
             
         except Exception as e:
             print_status("●", f"InsightFace installation failed: {e}", RED)
             print(f"  {RED}!{RESET} Face recognition will be disabled")
-            return
+            return False
         
     except Exception as e:
         print_status("●", f"Model not ready: {e}", YELLOW)
@@ -310,9 +344,11 @@ def check_models():
             app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
             app.prepare(ctx_id=0, det_size=(640, 640))
             print_status("●", "buffalo_l face recognition model ready")
+            return True
         except Exception as e2:
             print_status("●", f"Setup failed: {e2}", RED)
             print(f"  {RED}!{RESET} Face recognition will be disabled")
+            return False
 
 
 #------This Function checks git for updates-------
