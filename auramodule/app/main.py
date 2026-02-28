@@ -1,6 +1,7 @@
 
 import asyncio
 import logging
+import re
 import signal
 import subprocess
 import sys
@@ -72,6 +73,83 @@ def print_section(title):
     print(f"\n{BLUE}{BOLD}── {title} ──{RESET}\n")
 
 
+#------This Function streams ollama pull with progress----------
+def stream_ollama_pull(model_name: str) -> bool:
+    print(f"  {CYAN}→{RESET} Downloading {model_name}...")
+    
+    try:
+        process = subprocess.Popen(
+            ["ollama", "pull", model_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        
+        total_layers = 0
+        downloaded_layers = 0
+        start_time = time.time()
+        last_update = time.time()
+        
+        spinner = ['|', '/', '-', '\\']
+        spinner_idx = 0
+        
+        for line in process.stdout:
+            line = line.strip()
+            
+            if "pulling manifest" in line.lower():
+                print(f"  {BLUE}›{RESET} Pulling manifest...")
+            elif "downloading" in line.lower():
+                if "layer" in line.lower():
+                    if "/" in line:
+                        try:
+                            parts = line.split("/")
+                            for p in parts:
+                                if "(" in p and ")" in p:
+                                    nums = p.replace("(", "").replace(")", "").split("/")
+                                    if len(nums) == 2:
+                                        total_layers = max(total_layers, int(nums[1]))
+                                        downloaded_layers = int(nums[0])
+                        except:
+                            pass
+                    
+                    downloaded_layers += 1
+                    
+                    elapsed = time.time() - start_time
+                    speed = downloaded_layers / elapsed if elapsed > 0 else 0
+                    
+                    spinner_idx = (spinner_idx + 1) % 4
+                    
+                    if total_layers > 0:
+                        percent = (downloaded_layers / total_layers) * 100
+                        print(f"\r  {spinner[spinner_idx]} Progress: {percent:.1f}% ({downloaded_layers}/{total_layers} layers) - {speed:.1f} layers/s    ", end="", flush=True)
+                    else:
+                        print(f"\r  {spinner[spinner_idx]} Downloading... {speed:.1f} layers/s    ", end="", flush=True)
+                    
+                    last_update = time.time()
+                    
+            elif "verifying" in line.lower():
+                print(f"\n  {BLUE}›{RESET} Verifying checksum...")
+            elif "writing" in line.lower():
+                print(f"\n  {BLUE}›{RESET} Writing to model storage...")
+        
+        process.wait()
+        print()  
+        
+        if process.returncode == 0:
+            return True
+        return False
+        
+    except Exception as e:
+        print(f"\n  {RED}!{RESET} Error: {e}")
+        return False
+
+
+#------This Function pulls model with progress wrapper----------
+def pull_model_with_progress(model_name: str) -> bool:
+    return stream_ollama_pull(model_name)
+
+
 #------This Function checks/installs Ollama-------
 def check_ollama():
     print_section("Ollama Installation")
@@ -100,17 +178,10 @@ def check_ollama():
                 print_status("●", "gemma3:4b model not found", YELLOW)
                 print(f"  {CYAN}→{RESET} Pulling gemma3:4b model...")
                 
-                pull_result = subprocess.run(
-                    ["ollama", "pull", "gemma3:4b"],
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                )
-                
-                if pull_result.returncode == 0:
+                if pull_model_with_progress("gemma3:4b"):
                     print_status("●", "gemma3:4b model downloaded successfully")
                 else:
-                    print_status("●", f"Failed to pull model: {pull_result.stderr}", RED)
+                    print_status("●", "Failed to pull model", RED)
                     return False
             
             return True
@@ -145,14 +216,7 @@ def check_ollama():
         print_status("●", "Ollama installed successfully")
         
         print(f"\n  {BLUE}›{RESET} Pulling gemma3:4b model...")
-        pull_result = subprocess.run(
-            ["ollama", "pull", "gemma3:4b"],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        
-        if pull_result.returncode == 0:
+        if pull_model_with_progress("gemma3:4b"):
             print_status("●", "gemma3:4b model downloaded successfully")
         else:
             print_status("●", "Model pull failed - will retry on first use", YELLOW)
