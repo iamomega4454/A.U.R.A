@@ -111,7 +111,7 @@ export default function LoginScreen() {
 
             const credential = firebaseAuth.GoogleAuthProvider.credential(idToken);
             const firebaseUser = await firebaseAuth().signInWithCredential(credential);
-            const fbToken = await firebaseUser.user.getIdToken();
+            const fbToken = await firebaseUser.user.getIdToken(true);
 
             await signIn(
                 fbToken,
@@ -119,7 +119,7 @@ export default function LoginScreen() {
                 firebaseUser.user.displayName || '',
                 firebaseUser.user.photoURL || '',
             );
-            router.replace('/(onboarding)/illness');
+            router.replace('/');
         } catch (err: any) {
             if (err.code === 'auth/invalid-credential') {
                 Alert.alert('Sign In Failed', 'Authentication token expired. Please check your device clock.');

@@ -29,6 +29,16 @@ let storedIp: string = '';
 let storedPort: number = 8001;
 let storedPatientUid: string = '';
 let storedAuthToken: string = '';
+let storedBackendUrl: string = '';
+
+//------This Function handles the Normalize Backend Url---------
+function normalizeBackendUrl(url: string): string {
+    const trimmed = (url || '').trim();
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+        return '';
+    }
+    return trimmed.replace(/\/+$/, '');
+}
 
 //------This Function handles the Get Saved Module---------
 export async function getSavedModule(): Promise<AuraDevice | null> {
@@ -157,6 +167,7 @@ export function connectToAura(
     port: number,
     patientUid: string,
     authToken: string,
+    backendUrl?: string,
     onMessage?: (data: any) => void,
     onStateChange?: (state: ConnectionState) => void,
 ): WebSocket {
@@ -165,6 +176,7 @@ export function connectToAura(
     storedPort = port;
     storedPatientUid = patientUid;
     storedAuthToken = authToken;
+    storedBackendUrl = normalizeBackendUrl(backendUrl || storedBackendUrl);
     messageHandler = onMessage || null;
     stateChangeHandler = onStateChange || null;
     
@@ -180,11 +192,15 @@ export function connectToAura(
         stateChangeHandler?.('connected');
         console.log('[AURA] WebSocket connected');
         
-        ws?.send(JSON.stringify({
+        const connectPayload: Record<string, string> = {
             command: 'connect',
             patient_uid: patientUid,
             auth_token: authToken,
-        }));
+        };
+        if (storedBackendUrl) {
+            connectPayload.backend_url = storedBackendUrl;
+        }
+        ws?.send(JSON.stringify(connectPayload));
     };
 
     ws.onmessage = (event) => {
@@ -242,6 +258,7 @@ const attemptReconnection = () => {
                     storedPort,
                     storedPatientUid,
                     storedAuthToken,
+                    storedBackendUrl,
                     messageHandler ?? undefined,
                     stateChangeHandler ?? undefined
                 );

@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback } from 'react';
-import { View, StyleSheet, Platform } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { GLView, ExpoWebGLRenderingContext } from 'expo-gl';
 import * as THREE from 'three';
 
@@ -10,6 +10,37 @@ interface OritoAvatarProps {
     size?: number;
 }
 
+interface ExpoCanvasShim {
+    width: number;
+    height: number;
+    style: Record<string, unknown>;
+    clientHeight: number;
+    clientWidth: number;
+    addEventListener: () => void;
+    removeEventListener: () => void;
+    setAttribute: () => void;
+    getContext: () => WebGLRenderingContext;
+}
+
+//------This Function creates a minimal canvas shim required by Three.js in Expo GL---------
+function createExpoCanvasShim(
+    gl: ExpoWebGLRenderingContext,
+    width: number,
+    height: number,
+): ExpoCanvasShim {
+    return {
+        width,
+        height,
+        style: {},
+        clientHeight: height,
+        clientWidth: width,
+        addEventListener: () => { },
+        removeEventListener: () => { },
+        setAttribute: () => { },
+        getContext: () => gl as unknown as WebGLRenderingContext,
+    };
+}
+
 //------This Component renders Orito's 3D low-poly avatar---------
 export default function OritoAvatar({ state = 'idle', size = 200 }: OritoAvatarProps) {
     const stateRef = useRef<AvatarState>(state);
@@ -17,7 +48,7 @@ export default function OritoAvatar({ state = 'idle', size = 200 }: OritoAvatarP
     const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
     const meshRef = useRef<THREE.Mesh | null>(null);
     const particlesRef = useRef<THREE.Points | null>(null);
-    const clockRef = useRef(new THREE.Clock());
+    const timerRef = useRef(new THREE.Timer());
 
     useEffect(() => {
         stateRef.current = state;
@@ -36,16 +67,17 @@ export default function OritoAvatar({ state = 'idle', size = 200 }: OritoAvatarP
         camera.position.set(0, 0, 3);
 
         // Renderer using ExpoGL context
+        const canvas = createExpoCanvasShim(gl, w, h);
         const renderer = new THREE.WebGLRenderer({
-            // @ts-ignore
-            canvas: { width: w, height: h },
+            // Three expects a DOM-like canvas object in React Native runtimes.
+            canvas: canvas as unknown as HTMLCanvasElement,
             context: gl as unknown as WebGLRenderingContext,
             antialias: true,
             alpha: true,
         });
-        renderer.setSize(w, h);
-        renderer.setClearColor(0x000000, 0);
+        renderer.setSize(w, h, false);
         renderer.setPixelRatio(1);
+        renderer.setClearColor(0x000000, 0);
         rendererRef.current = renderer;
 
         // Lighting
@@ -144,9 +176,11 @@ export default function OritoAvatar({ state = 'idle', size = 200 }: OritoAvatarP
 
         // ── Animation loop ────────────────────────────────────────────────────
         let t = 0;
-        const animate = () => {
+        timerRef.current.reset();
+        const animate = (timestamp?: number) => {
             rafRef.current = requestAnimationFrame(animate);
-            const dt = clockRef.current.getDelta();
+            timerRef.current.update(timestamp);
+            const dt = timerRef.current.getDelta();
             t += dt;
 
             const s = stateRef.current;
@@ -177,8 +211,13 @@ export default function OritoAvatar({ state = 'idle', size = 200 }: OritoAvatarP
 
             // Eye pulse
             const eyePulse = 0.85 + Math.abs(Math.sin(t * 1.5)) * 0.3;
+            const eyeHue = s === 'thinking'
+                ? 0.75
+                : s === 'speaking'
+                    ? 0.82
+                    : 0.5;
             (leftEye.material as THREE.MeshBasicMaterial).color.setHSL(
-                s === 'listening' ? 0.5 : s === 'thinking' ? 0.75 : 0.5,
+                eyeHue,
                 1, eyePulse * 0.5
             );
             (rightEye.material as THREE.MeshBasicMaterial).color.copy(
@@ -200,7 +239,11 @@ export default function OritoAvatar({ state = 'idle', size = 200 }: OritoAvatarP
             pPos.needsUpdate = true;
 
             // Light colour by state
-            const lCol = s === 'listening' ? 0x00ffff : s === 'thinking' ? 0xaa00ff : s === 'speaking' ? 0xff88ff : 0x00ffff;
+            const lCol = s === 'thinking'
+                ? 0xaa00ff
+                : s === 'speaking'
+                    ? 0xff88ff
+                    : 0x00ffff;
             pointLight1.color.setHex(lCol);
 
             renderer.render(scene, camera);
@@ -214,6 +257,7 @@ export default function OritoAvatar({ state = 'idle', size = 200 }: OritoAvatarP
         return () => {
             if (rafRef.current) cancelAnimationFrame(rafRef.current);
             rendererRef.current?.dispose();
+            timerRef.current.dispose();
         };
     }, []);
 

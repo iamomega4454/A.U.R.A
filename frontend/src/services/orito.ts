@@ -3,6 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { patientDataService } from './patientData';
 import { triggerAuraFaceRecognition } from './aura-discovery';
+import { authEvents } from './authEvents';
+import { clearAuthToken, getAuthToken, isDevToken } from './authToken';
 
 
 
@@ -2310,6 +2312,16 @@ function getBackendBaseUrl(): string {
     ).replace(/\/+$/, '');
 }
 
+//------This Function builds a local fallback response for dev auth sessions---------
+function buildDevModeStreamReply(userMessage: string): string {
+    const trimmedMessage = userMessage.trim();
+    if (!trimmedMessage) {
+        return "I'm ready. Ask me anything.";
+    }
+
+    return `I heard you: "${trimmedMessage}". Dev sign-in is active, so live backend chat streaming is disabled. Sign in with Google to use the full assistant.`;
+}
+
 //------This Function sends a message and streams tokens from backend---------
 export async function sendMessageStream(
     userMessage: string,
@@ -2320,72 +2332,79 @@ export async function sendMessageStream(
         await initializeOrito();
     }
 
-    const emotionResult = detectEmotion(userMessage);
-    if (emotionResult.emotions.length > 0) {
-        userContext.detectedEmotions.push(...emotionResult.emotions);
-        userContext.detectedEmotions = userContext.detectedEmotions.slice(-10);
-    }
-
-    const contextPrompt = buildContextPrompt(emotionResult);
     userContext.lastInteractionTime = new Date();
 
-    const token = await AsyncStorage.getItem('firebase_token');
+    const token = await getAuthToken();
     const baseUrl = getBackendBaseUrl();
 
     const historyToSend = conversationHistory.slice(-30);
 
     let fullReply = '';
     try {
-        const response = await fetch(`${baseUrl}/orito/chat/stream`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-            body: JSON.stringify({
-                messages: historyToSend,
-                user_message: userMessage,
-                context_prompt: contextPrompt || undefined,
-                temperature: 0.85,
-                max_tokens: 1024,
-            }),
-        });
+        if (token && isDevToken(token)) {
+            const devReply = buildDevModeStreamReply(userMessage);
+            const chunks = devReply.split(' ');
+            chunks.forEach((chunk, index) => {
+                const tokenChunk = `${index > 0 ? ' ' : ''}${chunk}`;
+                fullReply += tokenChunk;
+                onToken(tokenChunk);
+            });
+        } else {
+            const response = await fetch(`${baseUrl}/orito/chat/stream`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                },
+                body: JSON.stringify({
+                    messages: historyToSend,
+                    user_message: userMessage,
+                    temperature: 0.85,
+                    max_tokens: 1024,
+                }),
+            });
 
-        if (!response.ok) {
-            throw new OritoError(
-                `Backend returned ${response.status}`,
-                ErrorCodes.AI_SERVICE_ERROR,
-                true,
-                { status: response.status },
-            );
-        }
+            if (!response.ok) {
+                if ((response.status === 401 || response.status === 403) && token) {
+                    await clearAuthToken();
+                    authEvents.emit('unauthorized');
+                }
 
-        const reader = response.body?.getReader();
-        if (!reader) throw new OritoError('No response body', ErrorCodes.AI_SERVICE_ERROR, true);
+                throw new OritoError(
+                    `Backend returned ${response.status}`,
+                    ErrorCodes.AI_SERVICE_ERROR,
+                    true,
+                    { status: response.status },
+                );
+            }
 
-        const decoder = new TextDecoder();
-        let buffer = '';
+            const reader = response.body?.getReader();
+            if (!reader) throw new OritoError('No response body', ErrorCodes.AI_SERVICE_ERROR, true);
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
-            for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                const payload = line.slice(6).trim();
-                if (!payload) continue;
-                try {
-                    const data = JSON.parse(payload);
-                    if (data.token) {
-                        fullReply += data.token;
-                        onToken(data.token);
-                    }
-                    if (data.tool_call && onToolCall) {
-                        onToolCall(data.tool_call);
-                    }
-                } catch { /* ignore malformed SSE lines */ }
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() ?? '';
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const payload = line.slice(6).trim();
+                    if (!payload) continue;
+                    try {
+                        const data = JSON.parse(payload);
+                        if (data.token) {
+                            fullReply += data.token;
+                            onToken(data.token);
+                        }
+                        if (data.tool_call && onToolCall) {
+                            onToolCall(data.tool_call);
+                        }
+                    } catch { /* ignore malformed SSE lines */ }
+                }
             }
         }
     } catch (err: any) {
@@ -2395,7 +2414,7 @@ export async function sendMessageStream(
     }
 
     const reply = fullReply || getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
-    conversationHistory.push({ role: 'user', content: contextPrompt ? `${contextPrompt}\n${userMessage}` : userMessage });
+    conversationHistory.push({ role: 'user', content: userMessage });
     conversationHistory.push({ role: 'assistant', content: reply });
     await saveConversationHistory();
     await saveUserContext();
@@ -2409,55 +2428,10 @@ export async function sendMessage(userMessage: string): Promise<string> {
         await initializeOrito();
     }
 
-    const emotionResult = detectEmotion(userMessage);
-    if (emotionResult.emotions.length > 0) {
-        userContext.detectedEmotions.push(...emotionResult.emotions);
-        userContext.detectedEmotions = userContext.detectedEmotions.slice(-10);
-    }
-
     userContext.lastInteractionTime = new Date();
 
     return sendMessageStream(userMessage, () => { });
 }
-
-//------This Function handles the Transcribe Audio---------
-export async function transcribeAudio(uri: string): Promise<string> {
-    let whisperPrompt = 'Aura health companion conversation. Accurately transcribe Indian English and light Hinglish phrasing. Preserve medication names, family names, and medical conditions exactly.';
-
-
-    const recentUserMessages = conversationHistory
-        .filter(m => m.role === 'user')
-        .slice(-1);
-    if (recentUserMessages.length > 0) {
-        const lastMsg = recentUserMessages[0].content.substring(0, 100);
-        whisperPrompt += ` Previous context: ${lastMsg}`;
-    }
-
-    const formData = new FormData();
-    formData.append('audio', {
-        uri,
-        name: 'audio.m4a',
-        type: 'audio/m4a',
-    } as any);
-    formData.append('prompt', whisperPrompt);
-
-    try {
-        const res = await api.post('/orito/transcribe', formData, {
-            headers: {
-                'Content-Type': 'multipart/form-data',
-            },
-        });
-        if (!res.status || res.status >= 400) {
-            return '';
-        }
-
-        return res.data.text || '';
-    } catch (err) {
-        console.log('Transcription error:', err);
-        return '';
-    }
-}
-
 
 //------This Function handles the Send Voice Message---------
 export async function sendVoiceMessage(userMessage: string): Promise<string> {

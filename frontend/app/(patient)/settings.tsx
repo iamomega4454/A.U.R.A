@@ -21,7 +21,7 @@ import api from '../../src/services/api';
 import Header from '../../src/components/Header';
 import Screen from '../../src/components/Screen';
 import * as Haptics from 'expo-haptics';
-import * as Speech from 'expo-speech';
+import nativeSpeechService from '../../src/services/nativeSpeech';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -302,7 +302,7 @@ export default function SettingsScreen() {
 
     useEffect(() => {
         return () => {
-            Speech.stop();
+            void nativeSpeechService.stopSpeaking();
         };
     }, []);
 
@@ -383,49 +383,25 @@ export default function SettingsScreen() {
     //------This Function handles the Handle Test Voice---------
     async function handleTestVoice() {
         if (isSpeaking) {
-            Speech.stop();
+            await nativeSpeechService.stopSpeaking();
             setIsSpeaking(false);
             return;
         }
 
         setIsSpeaking(true);
         try {
-            const voices = await Speech.getAvailableVoicesAsync();
-            const preferredTerms = settings.voice.voice_gender === 'female'
-                ? ['female', 'woman', 'samantha', 'victoria', 'zira']
-                : ['male', 'man', 'aaron', 'daniel', 'fred', 'alex'];
-
-            //------This Function handles the Chosen---------
-            let chosen = voices.find((voice) => {
-                const name = voice.name.toLowerCase();
-                const identifier = voice.identifier.toLowerCase();
-                return voice.language.startsWith(settings.voice.language)
-                    && preferredTerms.some((term) => name.includes(term) || identifier.includes(term));
-            });
-
-            if (!chosen) {
-                chosen = voices.find((voice) => voice.language.startsWith(settings.voice.language));
-            }
-
-            const speechOptions: any = {
+            await nativeSpeechService.speak('Hi, I am Orito. Your settings are looking great.', {
                 language: settings.voice.language,
                 pitch: settings.voice.voice_pitch,
                 rate: settings.voice.voice_speed,
-                onDone: () => setIsSpeaking(false),
-                onStopped: () => setIsSpeaking(false),
-                onError: () => setIsSpeaking(false),
-            };
-
-            if (chosen) {
-                speechOptions.voice = chosen.identifier;
-            }
-
-            Speech.speak('Hi, I am Orito. Your settings are looking great.', speechOptions);
+                voiceGender: settings.voice.voice_gender,
+            });
             Haptics.selectionAsync();
         } catch (error) {
             console.error('[Settings] voice test failed', error);
-            setIsSpeaking(false);
             Alert.alert('Voice Error', 'Could not test voice right now.');
+        } finally {
+            setIsSpeaking(false);
         }
     }
 

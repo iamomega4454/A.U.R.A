@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../services/api';
 import { connectionMonitor } from '../services/connectionMonitor';
 import { authEvents } from '../services/authEvents';
+import { clearAuthToken, getAuthToken, setAuthToken } from '../services/authToken';
 
 interface User {
     id: string;
@@ -92,7 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     //------This Function handles the Reload Session---------
     async function reloadSession() {
         try {
-            const saved = await AsyncStorage.getItem('firebase_token');
+            const saved = await getAuthToken();
             if (saved) {
                 setToken(saved);
                 const res = await api.get('/auth/me');
@@ -109,7 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const voiceSetup = await AsyncStorage.getItem('isVoiceSetup');
             setIsVoiceSetupState(voiceSetup === 'true');
 
-            const saved = await AsyncStorage.getItem('firebase_token');
+            const saved = await getAuthToken();
             if (saved) {
                 setToken(saved);
                 const res = await api.get('/auth/me');
@@ -119,7 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             if (err.code === 'ECONNABORTED' || err.message?.includes('Network Error') || !err.response) {
                 setConnectionError(true);
             } else {
-                await AsyncStorage.removeItem('firebase_token');
+                await clearAuthToken();
                 setToken(null);
             }
         }
@@ -129,30 +130,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     //------This Function handles the Sign In---------
     async function signIn(idToken: string, email: string, name: string, photo: string) {
-        await AsyncStorage.setItem('firebase_token', idToken);
+        await setAuthToken(idToken);
         setToken(idToken);
+        const registrationPayload = {
+            email,
+            display_name: name,
+            photo_url: photo,
+        };
+
         try {
-            const res = await api.post('/auth/register', {
-                email,
-                display_name: name,
-                photo_url: photo,
-            });
+            const res = await api.post('/auth/register', registrationPayload);
             setUser(res.data);
         } catch (err: any) {
+            if (err.response?.status === 401) {
+                const refreshedToken = await getAuthToken(true);
+                if (refreshedToken && refreshedToken !== idToken) {
+                    await setAuthToken(refreshedToken);
+                    setToken(refreshedToken);
+
+                    try {
+                        const retryRes = await api.post('/auth/register', registrationPayload);
+                        setUser(retryRes.data);
+                        return;
+                    } catch (retryErr: any) {
+                        err = retryErr;
+                    }
+                }
+            }
+
             if (err.code === 'ECONNABORTED' || err.message?.includes('Network Error') || !err.response) {
+                await clearAuthToken();
+                setToken(null);
                 throw new Error('Connection failed');
             }
             if (err.response?.status === 403) {
-                await AsyncStorage.removeItem('firebase_token');
+                await clearAuthToken();
+                setToken(null);
                 throw new Error('Account banned');
             }
+            await clearAuthToken();
+            setToken(null);
             throw err;
         }
     }
 
     //------This Function handles the Sign Out---------
     async function signOut() {
-        await AsyncStorage.removeItem('firebase_token');
+        await clearAuthToken();
         await AsyncStorage.removeItem('dev_mode_user');
         setUser(null);
         setToken(null);

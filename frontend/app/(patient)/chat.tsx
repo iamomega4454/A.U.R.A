@@ -1,21 +1,26 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-    View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, KeyboardAvoidingView,
-    Animated, ActivityIndicator, Alert, Linking,
+    View,
+    Text,
+    TextInput,
+    StyleSheet,
+    TouchableOpacity,
+    FlatList,
+    KeyboardAvoidingView,
+    Animated,
+    ActivityIndicator,
+    Alert,
+    Linking,
+    ScrollView,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useAudioRecorder, RecordingPresets, requestRecordingPermissionsAsync } from 'expo-audio';
-import * as Speech from 'expo-speech';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../../src/services/api';
 import {
-    sendMessage,
     sendMessageStream,
     resetConversation,
-    transcribeAudio,
-    detectEmotionFromText,
     initializeOrito,
-    getUserContext
+    getUserContext,
 } from '../../src/services/orito';
 import { incrementConversations, incrementVoiceCommands } from '../../src/services/moduleStats';
 import {
@@ -23,7 +28,6 @@ import {
     detectWakeWord,
     extractCommand,
     WakeWordState,
-    isUsingNativeSpeech,
     startRecognition,
     stopRecognition,
 } from '../../src/services/voiceAssistant';
@@ -31,108 +35,176 @@ import nativeSpeechService from '../../src/services/nativeSpeech';
 import OritoOverlay from '../../src/components/OritoOverlay';
 import OritoAvatar from '../../src/components/OritoAvatar';
 import Header from '../../src/components/Header';
-import { colors, fonts, spacing, radius } from '../../src/theme';
+import { fonts, spacing, radius } from '../../src/theme';
 import { Ionicons } from '@expo/vector-icons';
 
-interface Msg { id: string; role: 'user' | 'assistant'; text: string }
+type StreamLogType = 'input' | 'output' | 'tool' | 'system';
 
+interface Msg {
+    id: string;
+    role: 'user' | 'assistant';
+    text: string;
+    toolCalls?: string[];
+}
 
-//------This Function handles the Get Emotion Tts Params---------
-function getEmotionTTSParams(text: string): { pitch: number; rate: number } {
-    const { primary } = detectEmotionFromText(text);
+interface StreamLog {
+    id: string;
+    type: StreamLogType;
+    message: string;
+    timestamp: string;
+}
 
-
-    switch (primary) {
-        case 'happy':
-        case 'excited':
-            return { pitch: 1.1, rate: 1.1 };
-        case 'sad':
-        case 'lonely':
-            return { pitch: 0.85, rate: 0.9 };
-        case 'calm':
-            return { pitch: 1.0, rate: 1.0 };
-        case 'anxious':
-        case 'fearful':
-            return { pitch: 1.05, rate: 1.15 };
-        case 'angry':
-        case 'frustrated':
-            return { pitch: 0.9, rate: 1.05 };
-        case 'grateful':
-        case 'hopeful':
-            return { pitch: 0.95, rate: 0.95 };
-        case 'confused':
-            return { pitch: 1.0, rate: 0.95 };
+function getVoiceStateLabel(state: WakeWordState): string {
+    switch (state) {
+        case 'listening':
+            return 'Listening';
+        case 'processing':
+            return 'Processing';
+        case 'speaking':
+            return 'Speaking';
         default:
-            return { pitch: 1.0, rate: 1.0 };
+            return 'Ready';
     }
 }
 
+function getVoiceStateColor(state: WakeWordState): string {
+    switch (state) {
+        case 'listening':
+            return '#2dd4bf';
+        case 'processing':
+            return '#f59e0b';
+        case 'speaking':
+            return '#60a5fa';
+        default:
+            return '#94a3b8';
+    }
+}
 
-//------This Function handles the Speak With Emotion---------
-async function speakWithEmotion(text: string) {
-    const emotionParams = getEmotionTTSParams(text);
+function getMicButtonColor(state: WakeWordState): string {
+    switch (state) {
+        case 'listening':
+            return '#ef4444';
+        case 'processing':
+            return '#1e293b';
+        case 'speaking':
+            return '#1e293b';
+        default:
+            return '#0f172a';
+    }
+}
+
+function getMicIcon(state: WakeWordState): keyof typeof Ionicons.glyphMap {
+    switch (state) {
+        case 'listening':
+            return 'stop';
+        case 'processing':
+            return 'hourglass-outline';
+        case 'speaking':
+            return 'volume-high';
+        default:
+            return 'mic';
+    }
+}
+
+function getLogTypeColor(type: StreamLogType): string {
+    switch (type) {
+        case 'input':
+            return '#22c55e';
+        case 'output':
+            return '#60a5fa';
+        case 'tool':
+            return '#f59e0b';
+        default:
+            return '#64748b';
+    }
+}
+
+function formatNowTime(): string {
+    return new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+    });
+}
+
+//------This Function handles the Speak Response---------
+async function speakResponse(text: string) {
+    let rate = 1.0;
+    let pitch = 1.0;
+    let voiceGender: string | undefined;
 
     try {
-        // Settings are stored in backend, but user may have voice_feedback cached locally
         const settingsRaw = await AsyncStorage.getItem('user_settings_voice');
         if (settingsRaw) {
             const s = JSON.parse(settingsRaw);
             if (s.voice_feedback === false) return;
-            if (s.voice_speed != null) emotionParams.rate = s.voice_speed;
-            if (s.voice_pitch != null) emotionParams.pitch = s.voice_pitch;
+            if (s.voice_speed != null) rate = s.voice_speed;
+            if (s.voice_pitch != null) pitch = s.voice_pitch;
+            if (typeof s.voice_gender === 'string') {
+                voiceGender = s.voice_gender;
+            }
         }
     } catch {
-        // ignore - speak with defaults
+        // ignore and use defaults
     }
 
-
-    if (isUsingNativeSpeech()) {
-        await nativeSpeechService.speak(text, emotionParams);
-    } else {
-        await new Promise<void>((resolve) => {
-            Speech.speak(text, {
-                language: 'en',
-                pitch: emotionParams.pitch,
-                rate: emotionParams.rate,
-                onDone: () => resolve(),
-                onStopped: () => resolve(),
-                onError: () => resolve(),
-            });
-        });
-    }
+    await nativeSpeechService.speak(text, {
+        rate,
+        pitch,
+        language: 'en',
+        voiceGender,
+    });
 }
 
 //------This Function handles the Chat Screen---------
 export default function ChatScreen() {
     const router = useRouter();
     const { autoStart } = useLocalSearchParams();
+
     const [messages, setMessages] = useState<Msg[]>([]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [streamingText, setStreamingText] = useState('');
+    const [streamingToolCalls, setStreamingToolCalls] = useState<string[]>([]);
+    const [streamingInputText, setStreamingInputText] = useState('');
     const [isListening, setIsListening] = useState(false);
-    const flatRef = useRef<FlatList>(null);
-    const fadeAnim = useRef(new Animated.Value(0)).current;
-    const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-
-
-    const [showOverlay, setShowOverlay] = useState(false);
     const [overlayState, setOverlayState] = useState<WakeWordState>('idle');
     const [overlayTranscription, setOverlayTranscription] = useState('');
     const [overlayResponse, setOverlayResponse] = useState('');
-
-
+    const [showOverlay, setShowOverlay] = useState(false);
+    const [streamLogs, setStreamLogs] = useState<StreamLog[]>([]);
+    const [logsExpanded, setLogsExpanded] = useState(true);
     const [userName, setUserName] = useState<string | null>(null);
+
+    const flatRef = useRef<FlatList>(null);
+    const fadeAnim = useRef(new Animated.Value(0)).current;
     const isMountedRef = useRef(true);
     const isProcessingTranscriptRef = useRef(false);
-    const nativeStopFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const nativeStartFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const nativeTranscriptSeenRef = useRef(false);
-    const recorderActiveRef = useRef(false);
     const autoStartHandledRef = useRef(false);
     const isStartingListeningRef = useRef(false);
     const isStoppingListeningRef = useRef(false);
     const isSendingRef = useRef(false);
+    const lastInputLogKeyRef = useRef('');
+
+    const addStreamLog = useCallback((type: StreamLogType, message: string) => {
+        const trimmed = message.trim();
+        if (!trimmed) {
+            return;
+        }
+
+        const log: StreamLog = {
+            id: `${Date.now()}-${Math.random()}`,
+            type,
+            message: trimmed,
+            timestamp: formatNowTime(),
+        };
+
+        setStreamLogs((prev) => [...prev.slice(-39), log]);
+    }, []);
+
+    const listeningActive = isListening || overlayState === 'listening';
+    const micDisabled = loading || isSendingRef.current || overlayState === 'processing';
 
     useEffect(() => {
         let disposed = false;
@@ -154,25 +226,34 @@ export default function ChatScreen() {
             voiceAssistantService.setWakeWordCallback(() => {
                 setShowOverlay(true);
                 setOverlayState('listening');
+                setIsListening(true);
+                addStreamLog('system', 'Wake word detected');
                 playWakeSound();
             });
 
             voiceAssistantService.setStateChangeCallback((state) => {
                 setOverlayState(state);
+                setIsListening(state === 'listening');
+
                 if (state === 'listening') {
-                    setIsListening(true);
-                    return;
+                    addStreamLog('system', 'Microphone active');
+                } else if (state === 'processing') {
+                    addStreamLog('system', 'Processing captured speech');
+                } else if (state === 'speaking') {
+                    addStreamLog('system', 'TTS playback started');
                 }
-                setIsListening(false);
             });
 
             voiceAssistantService.setTranscriptionCallback((text, isFinal) => {
                 setOverlayTranscription(text);
-                if (text.trim()) {
-                    nativeTranscriptSeenRef.current = true;
-                    if (nativeStartFallbackTimerRef.current) {
-                        clearTimeout(nativeStartFallbackTimerRef.current);
-                        nativeStartFallbackTimerRef.current = null;
+                setStreamingInputText(text);
+
+                const normalized = text.trim();
+                if (normalized) {
+                    const logKey = `${isFinal ? 'F' : 'P'}:${normalized}`;
+                    if (lastInputLogKeyRef.current !== logKey) {
+                        lastInputLogKeyRef.current = logKey;
+                        addStreamLog('input', `${isFinal ? 'final' : 'partial'}: ${normalized}`);
                     }
                 }
 
@@ -193,10 +274,12 @@ export default function ChatScreen() {
                 const commandText = (detected ? extractCommand(finalText) : finalText).trim();
                 if (!commandText) {
                     setOverlayState('idle');
+                    setStreamingInputText('');
                     isProcessingTranscriptRef.current = false;
                     return;
                 }
 
+                addStreamLog('input', `dispatch: ${commandText}`);
                 incrementVoiceCommands().catch(() => { });
 
                 void handleSend(commandText, true).finally(() => {
@@ -204,7 +287,11 @@ export default function ChatScreen() {
                 });
             });
 
-            Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
+            Animated.timing(fadeAnim, {
+                toValue: 1,
+                duration: 450,
+                useNativeDriver: true,
+            }).start();
 
             if (autoStart === 'true' && !autoStartHandledRef.current) {
                 autoStartHandledRef.current = true;
@@ -219,61 +306,28 @@ export default function ChatScreen() {
             disposed = true;
             isMountedRef.current = false;
             isProcessingTranscriptRef.current = false;
-            if (nativeStopFallbackTimerRef.current) {
-                clearTimeout(nativeStopFallbackTimerRef.current);
-                nativeStopFallbackTimerRef.current = null;
-            }
-            if (nativeStartFallbackTimerRef.current) {
-                clearTimeout(nativeStartFallbackTimerRef.current);
-                nativeStartFallbackTimerRef.current = null;
-            }
-            void stopRecorderSafe('cleanup');
             void stopRecognition().catch(() => { });
             voiceAssistantService.cleanup();
-            Speech.stop();
             void nativeSpeechService.stopSpeaking().catch(() => { });
         };
-    }, [autoStart]);
-
+    }, [autoStart, addStreamLog, fadeAnim]);
 
     //------This Function handles the Play Wake Sound---------
     async function playWakeSound() {
         try {
             const { default: Haptics } = await import('expo-haptics');
             await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        } catch { }
-    }
-
-    //------This Function handles the Get Recorder Uri Safe---------
-    function getRecorderUriSafe(): string | null {
-        try {
-            return recorder.uri || null;
-        } catch (error) {
-            console.warn('[Chat] Recorder URI unavailable:', error);
-            return null;
+        } catch {
+            // ignore
         }
     }
-
-    //------This Function handles the Stop Recorder Safe---------
-    async function stopRecorderSafe(context: string): Promise<void> {
-        if (!recorderActiveRef.current) {
-            return;
-        }
-        try {
-            await recorder.stop();
-        } catch (error) {
-            console.warn(`[Chat] Failed to stop recorder (${context}):`, error);
-        } finally {
-            recorderActiveRef.current = false;
-        }
-    }
-
 
     //------This Function handles the Start Listening---------
     async function startListening() {
         if (
             loading ||
-            isListening ||
+            overlayState === 'processing' ||
+            listeningActive ||
             isProcessingTranscriptRef.current ||
             isStartingListeningRef.current ||
             isStoppingListeningRef.current
@@ -288,177 +342,62 @@ export default function ChatScreen() {
                 setShowOverlay(true);
                 void playWakeSound();
             }
+
             setOverlayResponse('');
             setOverlayTranscription('');
-            if (nativeStopFallbackTimerRef.current) {
-                clearTimeout(nativeStopFallbackTimerRef.current);
-                nativeStopFallbackTimerRef.current = null;
-            }
-            if (nativeStartFallbackTimerRef.current) {
-                clearTimeout(nativeStartFallbackTimerRef.current);
-                nativeStartFallbackTimerRef.current = null;
-            }
-            nativeTranscriptSeenRef.current = false;
+            setStreamingInputText('');
 
-            if (isUsingNativeSpeech()) {
-                await stopRecognition().catch(() => { });
+            const started = await startRecognition();
+            if (!started) {
+                Alert.alert(
+                    'Microphone Unavailable',
+                    'Could not start live speech recognition. Please check microphone permissions.',
+                );
+                setOverlayState('idle');
+                addStreamLog('system', 'Failed to start microphone');
+                return;
             }
-            await startRecording();
+
+            setIsListening(true);
+            setOverlayState('listening');
+            addStreamLog('system', 'Microphone started');
         } catch (error) {
             console.error('[Chat] Failed to start listening:', error);
             setIsListening(false);
             setOverlayState('idle');
+            addStreamLog('system', 'Microphone start error');
         } finally {
             isStartingListeningRef.current = false;
         }
     }
 
-
     //------This Function handles the Stop Listening---------
     async function stopListening() {
-        if ((!isListening && !recorderActiveRef.current) || isStoppingListeningRef.current) {
+        if ((!listeningActive && overlayState !== 'processing') || isStoppingListeningRef.current) {
             return;
         }
 
         isStoppingListeningRef.current = true;
         setIsListening(false);
-        if (nativeStartFallbackTimerRef.current) {
-            clearTimeout(nativeStartFallbackTimerRef.current);
-            nativeStartFallbackTimerRef.current = null;
-        }
-        nativeTranscriptSeenRef.current = false;
 
         try {
-            if (isUsingNativeSpeech()) {
-                setOverlayState('processing');
-                const STOP_RECOGNITION_TIMEOUT_MS = 1500;
-                let stopRecognitionTimeout: ReturnType<typeof setTimeout> | null = null;
-                const stopResult = await Promise.race([
-                    stopRecognition().then(() => 'stopped' as const),
-                    new Promise<'timeout'>((resolve) => {
-                        stopRecognitionTimeout = setTimeout(() => resolve('timeout'), STOP_RECOGNITION_TIMEOUT_MS);
-                    }),
-                ]).finally(() => {
-                    if (stopRecognitionTimeout) {
-                        clearTimeout(stopRecognitionTimeout);
-                        stopRecognitionTimeout = null;
-                    }
-                });
-
-                if (stopResult === 'timeout') {
-                    console.warn('[Chat] stopRecognition timed out; continuing stop flow');
-                }
-                if (nativeStopFallbackTimerRef.current) {
-                    clearTimeout(nativeStopFallbackTimerRef.current);
-                }
-                nativeStopFallbackTimerRef.current = setTimeout(() => {
-                    if (!isMountedRef.current) {
-                        return;
-                    }
-                    setOverlayState((prev) => (prev === 'processing' ? 'idle' : prev));
-                }, 2500);
-            } else {
-                await stopRecording();
+            await stopRecognition();
+            if (!isProcessingTranscriptRef.current) {
+                setOverlayState('idle');
             }
+            setStreamingInputText('');
+            addStreamLog('system', 'Microphone stopped');
         } catch (error) {
             console.error('[Chat] Failed to stop listening:', error);
             setOverlayState('idle');
+            addStreamLog('system', 'Microphone stop error');
         } finally {
             isStoppingListeningRef.current = false;
         }
     }
 
-    //------This Function handles the Start Recording---------
-    async function startRecording() {
-        if (recorderActiveRef.current) {
-            return;
-        }
-        if (nativeStartFallbackTimerRef.current) {
-            clearTimeout(nativeStartFallbackTimerRef.current);
-            nativeStartFallbackTimerRef.current = null;
-        }
-        nativeTranscriptSeenRef.current = false;
-
-        try {
-
-            const { granted } = await requestRecordingPermissionsAsync();
-            if (!granted) {
-                console.error('[Chat] Recording permission not granted');
-                Alert.alert(
-                    'Microphone Permission Needed',
-                    'Orito needs microphone access to listen. Please enable it in device settings and try again.',
-                );
-                setOverlayState('idle');
-                setIsListening(false);
-
-                return;
-            }
-
-
-            await recorder.record();
-            recorderActiveRef.current = true;
-            setIsListening(true);
-            setOverlayState('listening');
-        } catch (err) {
-            recorderActiveRef.current = false;
-            console.error('[Chat] Failed to start recording:', err);
-            setOverlayState('idle');
-            setIsListening(false);
-        }
-    }
-
-    //------This Function handles the Stop Recording---------
-    async function stopRecording() {
-        if (!recorderActiveRef.current || isProcessingTranscriptRef.current) return;
-        isProcessingTranscriptRef.current = true;
-        setIsListening(false);
-        setOverlayState('processing');
-
-        try {
-            await stopRecorderSafe('stopRecording');
-            const uri = getRecorderUriSafe();
-
-            if (uri) {
-                setLoading(true);
-                let text = '';
-                try {
-                    text = await transcribeAudio(uri);
-                } finally {
-                    setLoading(false);
-                }
-
-                const finalText = text.trim();
-                if (finalText) {
-
-                    const { detected } = detectWakeWord(finalText);
-                    const commandText = (detected ? extractCommand(finalText) : finalText).trim();
-
-
-                    setOverlayTranscription(finalText);
-                    if (!commandText) {
-                        setOverlayState('idle');
-                        return;
-                    }
-
-
-                    incrementVoiceCommands().catch(() => { });
-                    setInput(commandText);
-                    await handleSend(commandText, true);
-                    return;
-                }
-            }
-            setOverlayState('idle');
-        } catch (err) {
-            recorderActiveRef.current = false;
-            console.error('Failed to stop recording', err);
-            setOverlayState('idle');
-        } finally {
-            isProcessingTranscriptRef.current = false;
-        }
-    }
-
     //------This Function handles the Handle Send---------
-    async function handleSend(textOverride?: string, fromOverlay = false) {
+    async function handleSend(textOverride?: string, fromOverlay: boolean = false) {
         const text = (textOverride || input).trim();
         if (!text || loading || isSendingRef.current) {
             if (fromOverlay) {
@@ -472,21 +411,46 @@ export default function ChatScreen() {
         setMessages((prev) => [...prev, userMsg]);
         setInput('');
         setLoading(true);
+        setStreamingText('');
+        setStreamingToolCalls([]);
+        addStreamLog('system', 'Streaming output started');
         incrementConversations().catch(() => { });
 
         try {
             let reply = '';
-            setStreamingText('');
-            reply = await sendMessageStream(text, (token) => {
-                setStreamingText((prev) => prev + token);
-                setTimeout(() => flatRef.current?.scrollToEnd(), 50);
-            });
+            let lastOutputLogLength = 0;
+            const collectedToolCalls: string[] = [];
+
+            reply = await sendMessageStream(
+                text,
+                (token) => {
+                    setStreamingText((prev) => {
+                        const next = prev + token;
+                        if (next.length - lastOutputLogLength >= 30) {
+                            lastOutputLogLength = next.length;
+                            addStreamLog('output', `chunk: ${next.slice(-60)}`);
+                        }
+                        return next;
+                    });
+                    setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 50);
+                },
+                (toolName) => {
+                    const normalized = String(toolName || '').trim();
+                    if (!normalized || collectedToolCalls.includes(normalized)) {
+                        return;
+                    }
+
+                    collectedToolCalls.push(normalized);
+                    setStreamingToolCalls([...collectedToolCalls]);
+                    addStreamLog('tool', `tool call: ${normalized}`);
+                },
+            );
+
             setStreamingText('');
             if (!isMountedRef.current) {
                 return;
             }
 
-            // Handle CALL_ACTION prefix from call_relative tool
             let displayReply = reply;
             if (reply.startsWith('CALL_ACTION:')) {
                 const parts = reply.replace('CALL_ACTION:', '').split('|');
@@ -500,8 +464,16 @@ export default function ChatScreen() {
                 }
             }
 
-            const assistantMsg: Msg = { id: (Date.now() + 1).toString(), role: 'assistant', text: displayReply };
+            const assistantMsg: Msg = {
+                id: (Date.now() + 1).toString(),
+                role: 'assistant',
+                text: displayReply,
+                toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
+            };
             setMessages((prev) => [...prev, assistantMsg]);
+            setStreamingToolCalls([]);
+            setStreamingInputText('');
+            addStreamLog('output', `final: ${displayReply.slice(0, 100)}`);
 
             if (fromOverlay) {
                 setOverlayResponse(displayReply);
@@ -513,13 +485,13 @@ export default function ChatScreen() {
                 await api.post('/journal/', {
                     content: conversationContent,
                     source: 'ai_generated',
-                    mood: ''
+                    mood: '',
                 });
             } catch (error) {
                 console.error('[Chat] Failed to save to journal:', error);
             }
 
-            await speakWithEmotion(displayReply);
+            await speakResponse(displayReply);
             if (fromOverlay && isMountedRef.current) {
                 setOverlayState('idle');
             }
@@ -527,9 +499,18 @@ export default function ChatScreen() {
             if (!isMountedRef.current) {
                 return;
             }
+
             console.error('[Chat] Failed to send message:', error);
+            addStreamLog('system', 'Streaming output failed');
+            setStreamingToolCalls([]);
+            setStreamingText('');
+
             const fallbackReply = 'I ran into a voice processing issue. Please try again.';
-            const assistantMsg: Msg = { id: (Date.now() + 1).toString(), role: 'assistant', text: fallbackReply };
+            const assistantMsg: Msg = {
+                id: (Date.now() + 1).toString(),
+                role: 'assistant',
+                text: fallbackReply,
+            };
             setMessages((prev) => [...prev, assistantMsg]);
             if (fromOverlay) {
                 setOverlayResponse(fallbackReply);
@@ -539,97 +520,102 @@ export default function ChatScreen() {
             isSendingRef.current = false;
             if (isMountedRef.current) {
                 setLoading(false);
-                setTimeout(() => flatRef.current?.scrollToEnd(), 100);
+                setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
             }
         }
     }
 
-
     //------This Function handles the Close Overlay---------
     function closeOverlay() {
-        if (nativeStopFallbackTimerRef.current) {
-            clearTimeout(nativeStopFallbackTimerRef.current);
-            nativeStopFallbackTimerRef.current = null;
-        }
-        if (nativeStartFallbackTimerRef.current) {
-            clearTimeout(nativeStartFallbackTimerRef.current);
-            nativeStartFallbackTimerRef.current = null;
-        }
-        nativeTranscriptSeenRef.current = false;
         setShowOverlay(false);
         setOverlayState('idle');
         setOverlayTranscription('');
         setOverlayResponse('');
+        setStreamingInputText('');
         setIsListening(false);
         isProcessingTranscriptRef.current = false;
         isStartingListeningRef.current = false;
         isStoppingListeningRef.current = false;
 
-
-        if (isUsingNativeSpeech()) {
-            void stopRecognition().catch(() => { });
-            void nativeSpeechService.stopSpeaking().catch(() => { });
-        } else {
-            Speech.stop();
-        }
-
-
-        if (recorderActiveRef.current) {
-            void stopRecorderSafe('closeOverlay');
-        }
+        void stopRecognition().catch(() => { });
+        void nativeSpeechService.stopSpeaking().catch(() => { });
     }
-
 
     //------This Function handles the Handle Overlay Start Listening---------
     function handleOverlayStartListening() {
         startListening();
     }
 
-
     //------This Function handles the Handle Overlay Stop Listening---------
     function handleOverlayStopListening() {
         stopListening();
     }
 
-
     //------This Function handles the Handle Overlay Stop Speaking---------
     function handleOverlayStopSpeaking() {
-        if (isUsingNativeSpeech()) {
-            void nativeSpeechService.stopSpeaking().catch(() => { });
-        } else {
-            Speech.stop();
-        }
+        void nativeSpeechService.stopSpeaking().catch(() => { });
         setOverlayState('idle');
     }
 
+    //------This Function handles the Handle Mic Button---------
+    function handleMicButtonPress() {
+        if (overlayState === 'processing') {
+            return;
+        }
+
+        if (listeningActive) {
+            void stopListening();
+            return;
+        }
+
+        void startListening();
+    }
+
+    //------This Function handles the Render Tool Calls---------
+    const renderToolCalls = useCallback((toolCalls: string[] | undefined) => {
+        if (!toolCalls || toolCalls.length === 0) {
+            return null;
+        }
+
+        return (
+            <View style={s.toolRow}>
+                {toolCalls.map((toolName, index) => (
+                    <View key={`${toolName}-${index}`} style={s.toolChip}>
+                        <Ionicons name="construct-outline" size={12} color="#f59e0b" />
+                        <Text style={s.toolChipText}>{toolName}</Text>
+                    </View>
+                ))}
+            </View>
+        );
+    }, []);
 
     //------This Function handles the Render Message---------
     const renderMessage = useCallback(({ item }: { item: Msg }) => (
         <View style={[s.msgRow, item.role === 'user' ? s.userRow : s.botRow]}>
             <View style={[s.bubble, item.role === 'user' ? s.userBubble : s.botBubble]}>
-                <Text style={[s.msgText, item.role === 'user' ? s.userText : s.botText]}>
-                    {item.text}
-                </Text>
+                {item.role === 'assistant' ? renderToolCalls(item.toolCalls) : null}
+                <Text style={[s.msgText, item.role === 'user' ? s.userText : s.botText]}>{item.text}</Text>
             </View>
         </View>
-    ), []);
+    ), [renderToolCalls]);
 
     //------This Function handles the Empty Component---------
     const EmptyComponent = useCallback(() => (
-        <Animated.View style={[s.emptyWrap, { opacity: fadeAnim }]}>
+        <Animated.View style={[s.emptyWrap, { opacity: fadeAnim }]}> 
             <View style={s.emptyAvatarWrap}>
-                <OritoAvatar state={loading ? 'thinking' : 'idle'} size={140} />
+                <OritoAvatar state={loading ? 'thinking' : 'idle'} size={132} />
             </View>
-            <Text style={s.emptyTitle}>Hey, I'm Orito</Text>
-            {userName && <Text style={s.emptyGreeting}>Nice to see you, {userName}!</Text>}
-            <Text style={s.emptySub}>Say "Hello Orito" or tap the mic to start.</Text>
+            <Text style={s.emptyTitle}>Orito</Text>
+            <Text style={s.emptySub}>Streaming voice + text assistant</Text>
+            {userName ? <Text style={s.emptyHint}>Connected as {userName}</Text> : null}
         </Animated.View>
-    ), [fadeAnim, userName, loading]);
+    ), [fadeAnim, loading, userName]);
 
     const hasMessages = messages.length > 0;
+    const liveTranscript = streamingInputText || overlayTranscription;
 
     return (
-        <KeyboardAvoidingView style={s.container}>
+        <KeyboardAvoidingView style={s.container} behavior="padding">
             <OritoOverlay
                 visible={showOverlay}
                 state={overlayState}
@@ -643,33 +629,61 @@ export default function ChatScreen() {
 
             <Header
                 title="Orito"
-                subtitle="AI Assistant"
+                subtitle="Realtime Voice Assistant"
                 centered
                 showBack
                 onBackPress={() => router.back()}
                 rightElement={
                     <TouchableOpacity
                         style={s.resetBtn}
-                        onPress={() => { resetConversation(); setMessages([]); }}
-                        activeOpacity={0.8}
+                        onPress={() => {
+                            resetConversation();
+                            setMessages([]);
+                            setStreamingText('');
+                            setStreamingToolCalls([]);
+                            setStreamingInputText('');
+                            setStreamLogs([]);
+                        }}
+                        activeOpacity={0.85}
                     >
-                        <Ionicons name="refresh" size={18} color={colors.textSecondary} />
+                        <Ionicons name="refresh" size={16} color="#cbd5e1" />
                     </TouchableOpacity>
                 }
             />
 
-            <View style={s.voiceModeRow}>
-                <View style={s.voiceModeLeft}>
-                    <View style={s.voiceModeTopRow}>
-                        <View style={[s.voiceModeDot, isListening ? s.voiceModeDotListening : s.voiceModeDotNative]} />
-                        <Text style={s.voiceModeTitle}>{isListening ? 'Listening now' : 'Voice ready'}</Text>
+            <View style={s.statusCard}>
+                <View style={s.statusLeft}>
+                    <View style={s.statusTopRow}>
+                        <View style={[s.statusDot, { backgroundColor: getVoiceStateColor(overlayState) }]} />
+                        <Text style={s.statusTitle}>{getVoiceStateLabel(overlayState)}</Text>
                     </View>
-                    <Text style={s.voiceModeText}>Say "Hello Orito" or tap the mic button</Text>
+                    <Text style={s.statusSubtext}>
+                        {overlayState === 'listening'
+                            ? 'Capturing speech stream…'
+                            : overlayState === 'processing'
+                                ? 'Transcribing and dispatching command…'
+                                : 'Tap mic for streaming input, or type below'}
+                    </Text>
                 </View>
-                <TouchableOpacity style={s.voiceModeBtn} onPress={isListening ? stopListening : startListening} disabled={loading}>
-                    <Ionicons name={isListening ? 'stop' : 'mic'} size={18} color={colors.bg} />
+                <TouchableOpacity
+                    style={[s.micButton, { backgroundColor: getMicButtonColor(overlayState) }]}
+                    onPress={handleMicButtonPress}
+                    disabled={micDisabled}
+                    activeOpacity={0.88}
+                >
+                    <Ionicons name={getMicIcon(overlayState)} size={20} color="#ffffff" />
                 </TouchableOpacity>
             </View>
+
+            {liveTranscript ? (
+                <View style={s.liveInputCard}>
+                    <View style={s.liveInputHeader}>
+                        <Ionicons name="mic-outline" size={14} color="#34d399" />
+                        <Text style={s.liveInputTitle}>Streaming Input</Text>
+                    </View>
+                    <Text style={s.liveInputText}>{liveTranscript}</Text>
+                </View>
+            ) : null}
 
             <FlatList
                 ref={flatRef}
@@ -678,45 +692,90 @@ export default function ChatScreen() {
                 renderItem={renderMessage}
                 contentContainerStyle={[s.chatList, !hasMessages && s.chatListEmpty]}
                 ListEmptyComponent={EmptyComponent}
-                maxToRenderPerBatch={15}
+                maxToRenderPerBatch={18}
                 updateCellsBatchingPeriod={50}
                 initialNumToRender={15}
                 windowSize={10}
                 removeClippedSubviews={true}
             />
 
-            {streamingText ? (
-                <View style={[s.msgRow, s.botRow]}>
-                    <View style={[s.bubble, s.botBubble]}>
-                        <Text style={[s.msgText, s.botText]}>{streamingText}</Text>
+            {(streamingToolCalls.length > 0 || streamingText) ? (
+                <View style={[s.msgRow, s.botRow, s.streamingRow]}>
+                    <View style={[s.bubble, s.botBubble, s.streamingBubble]}>
+                        {renderToolCalls(streamingToolCalls)}
+                        {streamingText ? (
+                            <Text style={[s.msgText, s.botText]}>{streamingText}</Text>
+                        ) : (
+                            <Text style={s.streamingHint}>Waiting for streamed output…</Text>
+                        )}
                     </View>
                 </View>
-            ) : loading && (
+            ) : loading ? (
                 <View style={s.typingWrap}>
-                    <ActivityIndicator size="small" color="#000000" />
-                    <Text style={s.typingText}>Orito is thinking...</Text>
+                    <ActivityIndicator size="small" color="#38bdf8" />
+                    <Text style={s.typingText}>Orito is generating response stream…</Text>
                 </View>
-            )}
+            ) : null}
+
+            <View style={s.logsCard}>
+                <TouchableOpacity
+                    style={s.logsHeader}
+                    onPress={() => setLogsExpanded((prev) => !prev)}
+                    activeOpacity={0.85}
+                >
+                    <View style={s.logsHeaderLeft}>
+                        <Ionicons name="terminal-outline" size={14} color="#94a3b8" />
+                        <Text style={s.logsTitle}>Streaming Logs</Text>
+                    </View>
+                    <Ionicons name={logsExpanded ? 'chevron-up' : 'chevron-down'} size={16} color="#64748b" />
+                </TouchableOpacity>
+
+                {logsExpanded ? (
+                    <ScrollView style={s.logsScroll} nestedScrollEnabled>
+                        {streamLogs.length === 0 ? (
+                            <Text style={s.logsEmpty}>No stream events yet.</Text>
+                        ) : streamLogs.map((entry) => (
+                            <View key={entry.id} style={s.logRow}>
+                                <View style={[s.logTypePill, { borderColor: getLogTypeColor(entry.type) }]}> 
+                                    <Text style={[s.logTypeText, { color: getLogTypeColor(entry.type) }]}>{entry.type}</Text>
+                                </View>
+                                <Text style={s.logTime}>{entry.timestamp}</Text>
+                                <Text style={s.logMessage}>{entry.message}</Text>
+                            </View>
+                        ))}
+                    </ScrollView>
+                ) : null}
+            </View>
 
             <View style={s.inputRow}>
-                <TextInput style={s.chatInput} value={input} onChangeText={setInput}
-                    placeholder={isListening ? "Listening..." : "Talk to Orito..."}
-                    placeholderTextColor="#9CA3AF"
-                    onSubmitEditing={() => handleSend()} returnKeyType="send"
-                    editable={!isListening}
+                <TextInput
+                    style={s.chatInput}
+                    value={input}
+                    onChangeText={setInput}
+                    placeholder={listeningActive ? 'Listening…' : 'Send a message to Orito'}
+                    placeholderTextColor="#64748b"
+                    onSubmitEditing={() => handleSend()}
+                    returnKeyType="send"
+                    editable={!listeningActive && overlayState !== 'processing'}
                 />
 
                 {input.trim() ? (
-                    <TouchableOpacity style={[s.sendBtn, { backgroundColor: '#000000' }]} onPress={() => handleSend()} disabled={loading}>
-                        <Ionicons name="send" size={20} color="#FFFFFF" />
+                    <TouchableOpacity
+                        style={s.sendBtn}
+                        onPress={() => handleSend()}
+                        disabled={loading}
+                        activeOpacity={0.9}
+                    >
+                        <Ionicons name="send" size={18} color="#ffffff" />
                     </TouchableOpacity>
                 ) : (
                     <TouchableOpacity
-                        style={[s.sendBtn, isListening && s.listeningBtn, { backgroundColor: isListening ? '#DC2626' : '#000000' }]}
-                        onPress={isListening ? stopListening : startListening}
-                        disabled={loading}
+                        style={[s.sendBtn, { backgroundColor: getMicButtonColor(overlayState) }]}
+                        onPress={handleMicButtonPress}
+                        disabled={micDisabled}
+                        activeOpacity={0.9}
                     >
-                        <Ionicons name={isListening ? "stop" : "mic"} size={20} color="#FFFFFF" />
+                        <Ionicons name={getMicIcon(overlayState)} size={18} color="#ffffff" />
                     </TouchableOpacity>
                 )}
             </View>
@@ -725,102 +784,302 @@ export default function ChatScreen() {
 }
 
 const s = StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.bg, paddingBottom: 90 },
+    container: {
+        flex: 1,
+        backgroundColor: '#020617',
+        paddingBottom: 92,
+    },
     resetBtn: {
-        width: 34,
-        height: 34,
-        borderRadius: 17,
+        width: 32,
+        height: 32,
+        borderRadius: 16,
         borderWidth: 1,
-        borderColor: colors.border,
-        backgroundColor: colors.surface,
+        borderColor: '#334155',
+        backgroundColor: '#0f172a',
         alignItems: 'center',
         justifyContent: 'center',
     },
-    chatList: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.md, flexGrow: 1 },
-    chatListEmpty: { justifyContent: 'center' },
-    msgRow: { marginBottom: spacing.sm },
-    userRow: { alignItems: 'flex-end' },
-    botRow: { alignItems: 'flex-start' },
-    bubble: { maxWidth: '80%', borderRadius: radius.lg, padding: spacing.md },
-    userBubble: { backgroundColor: colors.white, borderBottomRightRadius: 4 },
-    botBubble: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderBottomLeftRadius: 4 },
-    msgText: { fontSize: fonts.sizes.md, lineHeight: 22 },
-    userText: { color: colors.bg },
-    botText: { color: colors.textPrimary },
-    typingWrap: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.xs },
-    typingText: { color: '#6B7280', fontSize: fonts.sizes.sm },
-    voiceModeRow: {
+    statusCard: {
         marginHorizontal: spacing.md,
         marginBottom: spacing.sm,
-        minHeight: 62,
-        borderRadius: radius.lg,
+        borderRadius: 18,
         borderWidth: 1,
-        borderColor: colors.border,
-        backgroundColor: colors.surface,
+        borderColor: '#1e293b',
+        backgroundColor: '#0b1220',
         paddingHorizontal: spacing.md,
+        paddingVertical: spacing.md,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
     },
-    voiceModeLeft: {
+    statusLeft: {
         flex: 1,
-        gap: 2,
+        paddingRight: spacing.sm,
     },
-    voiceModeTopRow: {
+    statusTopRow: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: spacing.xs,
     },
-    voiceModeDot: {
-        width: 8,
-        height: 8,
-        borderRadius: 4,
+    statusDot: {
+        width: 9,
+        height: 9,
+        borderRadius: 99,
     },
-    voiceModeDotNative: {
-        backgroundColor: colors.white,
+    statusTitle: {
+        color: '#e2e8f0',
+        fontSize: fonts.sizes.md,
+        fontWeight: '700',
     },
-    voiceModeDotListening: {
-        backgroundColor: colors.red,
-    },
-    voiceModeTitle: {
-        color: colors.textPrimary,
+    statusSubtext: {
+        color: '#94a3b8',
         fontSize: fonts.sizes.xs,
-        fontWeight: '600',
+        marginTop: 4,
     },
-    voiceModeText: {
-        color: colors.textMuted,
-        fontSize: 10,
-        fontWeight: '500',
-    },
-    voiceModeBtn: {
-        width: 38,
-        height: 38,
-        borderRadius: 19,
-        backgroundColor: colors.white,
+    micButton: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    liveInputCard: {
+        marginHorizontal: spacing.md,
+        marginBottom: spacing.sm,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#0f3f36',
+        backgroundColor: '#052e2b',
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+    },
+    liveInputHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.xs,
+        marginBottom: 6,
+    },
+    liveInputTitle: {
+        color: '#6ee7b7',
+        fontSize: fonts.sizes.xs,
+        fontWeight: '700',
+        textTransform: 'uppercase',
+        letterSpacing: 0.4,
+    },
+    liveInputText: {
+        color: '#d1fae5',
+        fontSize: fonts.sizes.sm,
+        lineHeight: 20,
+    },
+    chatList: {
+        paddingHorizontal: spacing.md,
+        paddingTop: spacing.xs,
+        paddingBottom: spacing.md,
+        flexGrow: 1,
+    },
+    chatListEmpty: {
+        justifyContent: 'center',
+    },
+    msgRow: {
+        marginBottom: spacing.sm,
+    },
+    userRow: {
+        alignItems: 'flex-end',
+    },
+    botRow: {
+        alignItems: 'flex-start',
+    },
+    bubble: {
+        maxWidth: '86%',
+        borderRadius: radius.lg,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+        borderWidth: 1,
+    },
+    userBubble: {
+        backgroundColor: '#e2e8f0',
+        borderColor: '#cbd5e1',
+    },
+    botBubble: {
+        backgroundColor: '#0f172a',
+        borderColor: '#1e293b',
+    },
+    msgText: {
+        fontSize: fonts.sizes.md,
+        lineHeight: 22,
+    },
+    userText: {
+        color: '#0f172a',
+        fontWeight: '600',
+    },
+    botText: {
+        color: '#e2e8f0',
+    },
+    toolRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: spacing.xs,
+        marginBottom: 8,
+    },
+    toolChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        borderWidth: 1,
+        borderColor: '#713f12',
+        backgroundColor: '#1c1917',
+        borderRadius: 999,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+    },
+    toolChipText: {
+        color: '#fbbf24',
+        fontSize: 11,
+        fontWeight: '700',
+    },
+    streamingRow: {
+        marginHorizontal: spacing.md,
+        marginBottom: spacing.xs,
+    },
+    streamingBubble: {
+        borderColor: '#155e75',
+        backgroundColor: '#082f49',
+    },
+    streamingHint: {
+        color: '#bae6fd',
+        fontSize: fonts.sizes.sm,
+    },
+    typingWrap: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.sm,
+        paddingHorizontal: spacing.lg,
+        paddingVertical: spacing.xs,
+    },
+    typingText: {
+        color: '#7dd3fc',
+        fontSize: fonts.sizes.sm,
+    },
+    logsCard: {
+        marginHorizontal: spacing.md,
+        marginBottom: spacing.sm,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#1e293b',
+        backgroundColor: '#070f1f',
+        overflow: 'hidden',
+    },
+    logsHeader: {
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        borderBottomWidth: 1,
+        borderBottomColor: '#0f172a',
+    },
+    logsHeaderLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.xs,
+    },
+    logsTitle: {
+        color: '#cbd5e1',
+        fontSize: fonts.sizes.sm,
+        fontWeight: '700',
+    },
+    logsScroll: {
+        maxHeight: 140,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+    },
+    logsEmpty: {
+        color: '#64748b',
+        fontSize: fonts.sizes.xs,
+    },
+    logRow: {
+        marginBottom: spacing.xs,
+    },
+    logTypePill: {
+        alignSelf: 'flex-start',
+        borderWidth: 1,
+        borderRadius: 999,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        marginBottom: 4,
+    },
+    logTypeText: {
+        fontSize: 10,
+        fontWeight: '700',
+        textTransform: 'uppercase',
+    },
+    logTime: {
+        color: '#64748b',
+        fontSize: 10,
+        marginBottom: 2,
+    },
+    logMessage: {
+        color: '#cbd5e1',
+        fontSize: fonts.sizes.xs,
+        lineHeight: 16,
     },
     inputRow: {
         flexDirection: 'row',
         alignItems: 'center',
         padding: spacing.md,
         borderTopWidth: 1,
-        borderTopColor: colors.border,
-        backgroundColor: '#050505',
+        borderTopColor: '#1e293b',
+        backgroundColor: '#030712',
         gap: spacing.sm,
     },
-    chatInput: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.full, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, color: colors.textPrimary, fontSize: fonts.sizes.md },
-    sendBtn: { width: 40, height: 40, borderRadius: radius.full, alignItems: 'center', justifyContent: 'center' },
-    listeningBtn: { transform: [{ scale: 1.1 }] },
-    emptyWrap: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xl, paddingBottom: spacing.xl },
+    chatInput: {
+        flex: 1,
+        borderRadius: radius.full,
+        borderWidth: 1,
+        borderColor: '#1e293b',
+        backgroundColor: '#0f172a',
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+        color: '#e2e8f0',
+        fontSize: fonts.sizes.md,
+    },
+    sendBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: radius.full,
+        backgroundColor: '#0f172a',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    emptyWrap: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: spacing.xl,
+        paddingBottom: spacing.xl,
+    },
     emptyAvatarWrap: {
-        width: 140,
-        height: 140,
-        borderRadius: 70,
+        width: 132,
+        height: 132,
+        borderRadius: 66,
         overflow: 'hidden',
         backgroundColor: '#0d0d1a',
+        borderWidth: 1,
+        borderColor: '#1f2937',
     },
-    emptyTitle: { color: colors.textPrimary, fontSize: fonts.sizes.xl, fontWeight: '600', marginTop: spacing.md },
-    emptyGreeting: { color: colors.textSecondary, fontSize: fonts.sizes.md, fontWeight: '600', marginTop: spacing.xs },
-    emptySub: { color: colors.textMuted, fontSize: fonts.sizes.md, textAlign: 'center', marginTop: spacing.sm, lineHeight: 22, maxWidth: 300 },
+    emptyTitle: {
+        color: '#e2e8f0',
+        fontSize: 26,
+        fontWeight: '700',
+        marginTop: spacing.md,
+    },
+    emptySub: {
+        color: '#94a3b8',
+        fontSize: fonts.sizes.md,
+        marginTop: 6,
+    },
+    emptyHint: {
+        color: '#64748b',
+        fontSize: fonts.sizes.sm,
+        marginTop: spacing.xs,
+    },
 });

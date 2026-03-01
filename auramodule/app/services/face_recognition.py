@@ -129,6 +129,17 @@ def detect_and_crop_faces(frame: np.ndarray) -> List[Dict]:
                 logger.warning(f"[FACE-REC] Invalid bbox for face #{i + 1}, skipping")
                 continue
 
+            face_width = x2 - x1
+            face_height = y2 - y1
+            if (
+                face_width < settings.face_min_bbox_size
+                or face_height < settings.face_min_bbox_size
+            ):
+                logger.debug(
+                    f"[FACE-REC] Face #{i + 1} too small ({face_width}x{face_height}), skipping"
+                )
+                continue
+
             
             padding = 20
             x1_crop = max(0, x1 - padding)
@@ -140,11 +151,18 @@ def detect_and_crop_faces(frame: np.ndarray) -> List[Dict]:
 
             
             if cropped.size > 0:
+                gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+                blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+                if blur_score < settings.face_min_blur_variance:
+                    logger.debug(
+                        f"[FACE-REC] Face #{i + 1} too blurry (variance={blur_score:.1f}), skipping"
+                    )
+                    continue
+
                 cropped_resized = cv2.resize(cropped, (112, 112))
-                face_width = x2 - x1
-                face_height = y2 - y1
                 logger.debug(
-                    f"[FACE-REC]   Face #{i + 1}: bbox=({x1},{y1},{x2},{y2}) size={face_width}x{face_height}px"
+                    f"[FACE-REC]   Face #{i + 1}: bbox=({x1},{y1},{x2},{y2}) "
+                    f"size={face_width}x{face_height}px blur={blur_score:.1f}"
                 )
 
                 cropped_faces.append(
@@ -152,6 +170,7 @@ def detect_and_crop_faces(frame: np.ndarray) -> List[Dict]:
                         "bbox": np.array([x1, y1, x2, y2]),  
                         "cropped": cropped_resized,
                         "embedding": face.normed_embedding,  
+                        "blur_score": blur_score,
                     }
                 )
         except Exception as e:
@@ -334,6 +353,7 @@ async def identify_person(
 
     
     confidence_threshold = settings.face_confidence_threshold
+    margin_threshold = settings.face_match_margin
     logger.debug(f"[FACE-REC] Matching results (threshold={confidence_threshold}):")
     
     results: List[dict] = []
@@ -342,19 +362,43 @@ async def identify_person(
             
             similarities = similarity_matrix[face_idx]  
 
-            
-            best_match_idx = int(np.argmax(similarities))
-            best_score = float(similarities[best_match_idx])
+            relative_scores: Dict[int, float] = {}
+            for emb_idx, emb_score in enumerate(similarities):
+                rel_idx = relative_embedding_map[emb_idx]
+                score_value = float(emb_score)
+                current_max = relative_scores.get(rel_idx)
+                if current_max is None or score_value > current_max:
+                    relative_scores[rel_idx] = score_value
 
-            if best_score >= confidence_threshold:
+            if not relative_scores:
+                results.append(
+                    {
+                        "name": "unknown",
+                        "relationship": "",
+                        "confidence": 0.0,
+                        "bbox": face["bbox"].tolist(),
+                    }
+                )
+                continue
+
+            sorted_rel_scores = sorted(
+                relative_scores.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            best_relative_idx, best_score = sorted_rel_scores[0]
+            second_best_score = sorted_rel_scores[1][1] if len(sorted_rel_scores) > 1 else 0.0
+            score_margin = float(best_score - second_best_score)
+
+            if best_score >= confidence_threshold and score_margin >= margin_threshold:
                 
-                relative_idx = relative_embedding_map[best_match_idx]
-                matched_relative = relatives_data[relative_idx]
+                matched_relative = relatives_data[best_relative_idx]
                 photos = matched_relative.get("photos") or []
 
                 logger.info(
                     f"[FACE-REC]   Face #{face_idx + 1}: IDENTIFIED as '{matched_relative['name']}' "
-                    f"({matched_relative.get('relationship', 'unknown')}) - confidence: {best_score:.3f}"
+                    f"({matched_relative.get('relationship', 'unknown')}) - "
+                    f"confidence: {best_score:.3f} margin: {score_margin:.3f}"
                 )
 
                 results.append(
@@ -365,19 +409,24 @@ async def identify_person(
                         "relationship": matched_relative.get("relationship", ""),
                         "photo_count": len(photos),
                         "confidence": round(best_score, 3),
+                        "match_margin": round(score_margin, 3),
+                        "blur_score": round(float(face.get("blur_score", 0.0)), 1),
                         "bbox": face["bbox"].tolist(),
                     }
                 )
             else:
                 
                 logger.debug(
-                    f"[FACE-REC]   Face #{face_idx + 1}: UNKNOWN (best score: {best_score:.3f}, below threshold)"
+                    f"[FACE-REC]   Face #{face_idx + 1}: UNKNOWN "
+                    f"(score={best_score:.3f}, margin={score_margin:.3f})"
                 )
                 results.append(
                     {
                         "name": "unknown",
                         "relationship": "",
                         "confidence": round(best_score, 3),
+                        "match_margin": round(score_margin, 3),
+                        "blur_score": round(float(face.get("blur_score", 0.0)), 1),
                         "bbox": face["bbox"].tolist(),
                     }
                 )

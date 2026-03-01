@@ -5,13 +5,14 @@ import threading
 import subprocess
 import time
 import os
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 import asyncio
-from typing import Optional
+from typing import IO, List, Optional
 from app.core.logging_config import setup_logging
 from app.core.config import settings
 from app.core.firebase import init_firebase, _app as firebase_app
@@ -39,6 +40,11 @@ from app.routes import (
 from app.routes import settings as settings_router
 from app.services.cleanup_task import cleanup_stale_modules
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
+
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -48,50 +54,235 @@ CYAN = "\033[96m"
 RESET = "\033[0m"
 BOLD = "\033[1m"
 
-UPDATE_CHECK_INTERVAL = 300
+
+#------This Function resolves backend update interval---------
+def _get_update_interval_seconds() -> int:
+    raw_value = os.getenv("BACKEND_UPDATE_CHECK_INTERVAL_SECONDS", "300")
+    try:
+        interval_seconds = int(raw_value)
+    except ValueError:
+        interval_seconds = 300
+    return max(interval_seconds, 60)
+
+
+UPDATE_CHECK_INTERVAL = _get_update_interval_seconds()
+AUTO_UPDATE_ENABLED = os.getenv("BACKEND_AUTO_UPDATE_ENABLED", "true").lower() == "true"
+AUTO_RESTART_ON_UPDATE = os.getenv("BACKEND_AUTO_RESTART_ON_UPDATE", "false").lower() == "true"
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+UPDATE_LOCK_PATH = Path("/tmp/aura_repo_update.lock")
 
 setup_logging(debug=(settings.environment != "production"))
 logger = logging.getLogger(__name__)
+_update_monitor_thread: Optional[threading.Thread] = None
+_update_monitor_stop_event = threading.Event()
+_update_monitor_lock = threading.Lock()
+
+
+#------This Function acquires process-level update lock-------
+def _acquire_process_update_lock() -> Optional[IO[str]]:
+    if fcntl is None:
+        return None
+    lock_file = open(UPDATE_LOCK_PATH, "w")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_file
+    except OSError:
+        lock_file.close()
+        return None
+
+
+#------This Function releases process-level update lock-------
+def _release_process_update_lock(lock_file: Optional[IO[str]]) -> None:
+    if fcntl is None or lock_file is None:
+        return
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_file.close()
+
+
+#------This Function runs git commands for auto-update-------
+def _run_git_command(args: List[str], timeout: int = 20) -> Optional[subprocess.CompletedProcess]:
+    try:
+        return subprocess.run(
+            ["git"] + args,
+            cwd=str(BACKEND_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError:
+        logger.warning("[UPDATE] git executable not found; disabling update checks")
+    except subprocess.TimeoutExpired:
+        logger.warning("[UPDATE] git command timed out: git %s", " ".join(args))
+    except Exception as exc:
+        logger.warning("[UPDATE] git command failed: git %s (%s)", " ".join(args), exc)
+    return None
+
+
+#------This Function checks whether backend runs inside a git repository-------
+def _is_git_repository() -> bool:
+    result = _run_git_command(["rev-parse", "--is-inside-work-tree"])
+    if result is None or result.returncode != 0:
+        return False
+    return result.stdout.strip() == "true"
+
+
+#------This Function resolves the upstream tracking branch-------
+def _get_tracking_branch() -> Optional[str]:
+    result = _run_git_command(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    if result is None or result.returncode != 0:
+        return None
+    branch = result.stdout.strip()
+    return branch if branch else None
+
+
+#------This Function checks whether local working tree is clean-------
+def _is_work_tree_clean() -> bool:
+    result = _run_git_command(["status", "--porcelain"])
+    if result is None or result.returncode != 0:
+        return False
+    return result.stdout.strip() == ""
 
 
 #------This Function checks for git updates-------
-def check_for_updates():
-    try:
-        subprocess.run(["git", "fetch"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        result = subprocess.run(
-            ["git", "log", "--oneline", "HEAD..origin/main"],
-            capture_output=True, text=True, check=False
-        )
-        return bool(result.stdout.strip())
-    except Exception:
+def check_for_updates() -> bool:
+    tracking_branch = _get_tracking_branch()
+    if tracking_branch is None:
+        logger.debug("[UPDATE] Upstream tracking branch is not configured")
         return False
+
+    fetch_result = _run_git_command(["fetch", "--prune", "--quiet"])
+    if fetch_result is None or fetch_result.returncode != 0:
+        error_text = fetch_result.stderr.strip() if fetch_result else "unknown fetch error"
+        logger.warning("[UPDATE] Failed to fetch remote updates: %s", error_text)
+        return False
+
+    local_head_result = _run_git_command(["rev-parse", "HEAD"])
+    remote_head_result = _run_git_command(["rev-parse", tracking_branch])
+    if (
+        local_head_result is None
+        or remote_head_result is None
+        or local_head_result.returncode != 0
+        or remote_head_result.returncode != 0
+    ):
+        return False
+
+    local_sha = local_head_result.stdout.strip()
+    remote_sha = remote_head_result.stdout.strip()
+    return bool(local_sha and remote_sha and local_sha != remote_sha)
 
 
 #------This Function pulls updates-------
-def pull_updates():
-    try:
-        subprocess.run(["git", "pull"], check=True)
-        return True
-    except Exception:
+def pull_updates() -> bool:
+    if not _is_work_tree_clean():
+        logger.warning("[UPDATE] Local changes detected; skipping auto-pull to avoid merge conflicts")
         return False
+
+    pull_result = _run_git_command(["pull", "--ff-only"], timeout=60)
+    if pull_result is None:
+        return False
+    if pull_result.returncode != 0:
+        error_text = pull_result.stderr.strip() or pull_result.stdout.strip() or "unknown pull error"
+        logger.error("[UPDATE] Failed to pull updates: %s", error_text)
+        return False
+
+    return True
+
+
+#------This Function restarts backend after successful update-------
+def _restart_after_update() -> None:
+    if not AUTO_RESTART_ON_UPDATE:
+        logger.warning(
+            "[UPDATE] Updates were pulled. Manual restart required. "
+            "Set BACKEND_AUTO_RESTART_ON_UPDATE=true to enable self-restart."
+        )
+        return
+
+    if os.getenv("UVICORN_FD"):
+        logger.warning(
+            "[UPDATE] Backend is running in a uvicorn managed worker; "
+            "skipping self-restart to avoid duplicate server processes."
+        )
+        return
+
+    bind_host, bind_port = _resolve_runtime_bind()
+    restart_args = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        bind_host,
+        "--port",
+        str(bind_port),
+    ]
+    if settings.environment != "production":
+        restart_args.append("--reload")
+
+    logger.info("[UPDATE] Restarting backend process to apply updates")
+    os.execv(sys.executable, restart_args)
 
 
 #------This Function monitors for updates in background-------
-def update_monitor():
-    while True:
-        time.sleep(UPDATE_CHECK_INTERVAL)
-        print(f"\n{YELLOW}[UPDATE] Checking for updates...{RESET}")
-        if check_for_updates():
-            print(f"{GREEN}[UPDATE] Updates found! Pulling...{RESET}")
-            if pull_updates():
-                print(f"{GREEN}[UPDATE] Updates pulled. Restarting...{RESET}")
-                os.execv(sys.executable, [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"])
+def update_monitor() -> None:
+    while not _update_monitor_stop_event.wait(UPDATE_CHECK_INTERVAL):
+        try:
+            with _update_monitor_lock:
+                lock_file = _acquire_process_update_lock()
+                if fcntl is not None and lock_file is None:
+                    logger.debug("[UPDATE] Another process is running an update cycle; skipping this interval")
+                    continue
+                try:
+                    logger.info("[UPDATE] Checking for updates...")
+                    if not check_for_updates():
+                        continue
+
+                    logger.info("[UPDATE] Updates found. Pulling latest changes...")
+                    if pull_updates():
+                        logger.info("[UPDATE] Updates pulled successfully")
+                        _restart_after_update()
+                finally:
+                    _release_process_update_lock(lock_file)
+        except Exception as exc:
+            logger.warning("[UPDATE] Update monitor cycle failed: %s", exc)
 
 
 #------This Function starts the background update monitor-------
-def start_update_monitor():
-    monitor_thread = threading.Thread(target=update_monitor, daemon=True)
-    monitor_thread.start()
+def start_update_monitor() -> bool:
+    global _update_monitor_thread
+
+    if not AUTO_UPDATE_ENABLED:
+        logger.info("[UPDATE] Auto-update monitor disabled (BACKEND_AUTO_UPDATE_ENABLED=false)")
+        return False
+
+    if not _is_git_repository():
+        logger.warning("[UPDATE] Auto-update monitor disabled: backend is not inside a git repository")
+        return False
+
+    if _get_tracking_branch() is None:
+        logger.warning("[UPDATE] Auto-update monitor disabled: no upstream tracking branch configured")
+        return False
+
+    if _update_monitor_thread and _update_monitor_thread.is_alive():
+        return True
+
+    _update_monitor_stop_event.clear()
+    _update_monitor_thread = threading.Thread(
+        target=update_monitor,
+        name="backend-update-monitor",
+        daemon=True,
+    )
+    _update_monitor_thread.start()
+    return True
+
+
+#------This Function stops the background update monitor-------
+def stop_update_monitor() -> None:
+    if _update_monitor_thread and _update_monitor_thread.is_alive():
+        _update_monitor_stop_event.set()
+        _update_monitor_thread.join(timeout=2)
 
 
 _cleanup_task = None
@@ -186,8 +377,10 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to connect to database: {str(e)}")
         raise
 
-    start_update_monitor()
-    print(f"{CYAN}[UPDATE] Auto-update monitor started{RESET}")
+    if start_update_monitor():
+        print(f"{CYAN}[UPDATE] Auto-update monitor started{RESET}")
+    else:
+        print(f"{YELLOW}[UPDATE] Auto-update monitor disabled{RESET}")
 
     
     try:
@@ -210,6 +403,7 @@ async def lifespan(app: FastAPI):
             await _cleanup_task
         except asyncio.CancelledError:
             pass
+    stop_update_monitor()
 
     await close_db()
     print(f"{RED}[SHUTDOWN] Application shutdown complete{RESET}")

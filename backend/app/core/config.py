@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     
     
     firebase_credentials_path: str = "./firebase-credentials.json"
+    firebase_project_id: str = ""
     
     
     groq_api_key: str = ""

@@ -6,6 +6,7 @@ import platform
 import time
 from typing import Optional, Callable, Any, Dict, List
 from app.core.config import settings
+from app.core.pairing_store import normalize_backend_url, save_pairing_config
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ class BackendClient:
         self._retry_count: int = 3
         self._on_reconnect_callback: Optional[Callable[[], Any]] = None
         self._is_reconnecting: bool = False
+        self._config_lock = asyncio.Lock()
 
     def _auth_headers(self) -> dict:
         token = (settings.backend_auth_token or "").strip()
@@ -62,6 +64,17 @@ class BackendClient:
         self._on_reconnect_callback = callback
 
     async def register(self, ip: str, port: int) -> bool:
+        if not (self.patient_uid or "").strip():
+            logger.warning("Cannot register with backend: patient_uid is empty")
+            return False
+
+        normalized_backend_url = normalize_backend_url(settings.backend_url or "")
+        if normalized_backend_url is None:
+            logger.warning("Cannot register with backend: backend_url is invalid")
+            return False
+
+        settings.backend_url = normalized_backend_url
+
         hardware_info = {
             "platform": platform.system(),
             "processor": platform.processor(),
@@ -130,6 +143,50 @@ class BackendClient:
 
         logger.error("Failed to register with backend after multiple attempts")
         return False
+
+    #------This Function applies paired runtime configuration---------
+    async def apply_pairing_config(self, patient_uid: str, backend_url: str) -> bool:
+        normalized_patient_uid = (patient_uid or "").strip()
+        normalized_backend_url = normalize_backend_url(backend_url)
+
+        if not normalized_patient_uid:
+            logger.warning("[PAIRING] Ignoring pairing update: patient_uid is empty")
+            return False
+        if normalized_backend_url is None:
+            logger.warning("[PAIRING] Ignoring pairing update: backend_url is invalid")
+            return False
+
+        async with self._config_lock:
+            config_changed = (
+                normalized_patient_uid != self.patient_uid
+                or normalized_backend_url != normalize_backend_url(settings.backend_url or "")
+            )
+
+            self.patient_uid = normalized_patient_uid
+            settings.patient_uid = normalized_patient_uid
+            settings.backend_url = normalized_backend_url
+            save_pairing_config(normalized_patient_uid, normalized_backend_url)
+
+            if config_changed:
+                self.registered = False
+                if self._http_client and not self._http_client.is_closed:
+                    await self._http_client.aclose()
+                self._http_client = None
+                logger.info(
+                    "[PAIRING] Applied runtime config "
+                    "(patient_uid=%s, backend_url=%s)",
+                    normalized_patient_uid[:8] + "...",
+                    normalized_backend_url,
+                )
+
+            from app.services.discovery import _get_local_ip
+
+            local_ip = _get_local_ip()
+            registered = await self.register(local_ip, settings.http_port)
+            if registered and self._heartbeat_task is None:
+                await self.start_heartbeat()
+
+            return registered
 
     async def start_heartbeat(self):
         if self._heartbeat_task:

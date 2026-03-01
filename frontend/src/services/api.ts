@@ -1,6 +1,6 @@
 import axios from 'axios';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
+import { clearAuthToken, getAuthToken, isDevToken } from './authToken';
 
 const manifestExtra =
     (Constants as any)?.manifest2?.extra?.expoClient?.extra ||
@@ -32,9 +32,9 @@ const DEV_MOCK_RESPONSES: Record<string, any> = {
 };
 
 api.interceptors.request.use(async (config) => {
-    const token = await AsyncStorage.getItem('firebase_token');
+    const token = await getAuthToken();
     if (token) {
-        if (token.startsWith('dev-token-') && config.url !== '/health') {
+        if (isDevToken(token) && config.url !== '/health') {
             //------This Function handles the Mock Key---------
             const mockKey = Object.keys(DEV_MOCK_RESPONSES).find(key =>
                 config.url?.startsWith(key)
@@ -64,11 +64,11 @@ api.interceptors.response.use(
     (res) => res,
     async (err) => {
         if (err.response?.status === 401) {
-            const token = await AsyncStorage.getItem('firebase_token');
-            if (token && token.startsWith('dev-token-')) {
+            const token = await getAuthToken();
+            if (token && isDevToken(token)) {
                 return Promise.reject(err);
             }
-            AsyncStorage.removeItem('firebase_token');
+            await clearAuthToken();
             const { authEvents } = require('./authEvents');
             authEvents.emit('unauthorized');
         }

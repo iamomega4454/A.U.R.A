@@ -106,8 +106,10 @@ export default function ConnectAuraScreen() {
     //------This Function handles the Handle Connect---------
     async function handleConnect(ip: string, port: number) {
         setConnecting(true);
+        const runtimeBackendUrl =
+            typeof api.defaults.baseURL === 'string' ? api.defaults.baseURL : '';
 
-        connectToAura(ip, port, user?.firebase_uid || '', token || '', (msg) => {
+        connectToAura(ip, port, user?.firebase_uid || '', token || '', runtimeBackendUrl, (msg) => {
             if (msg.type === 'connected') {
                 setConnection(ip, port);
                 saveAuraAddress({

@@ -1,5 +1,4 @@
 import { Platform, AppState, AppStateStatus } from 'react-native';
-import * as Speech from 'expo-speech';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import nativeSpeechService, {
     initializeNativeSpeech,
@@ -224,47 +223,25 @@ export async function speakResponse(text: string, options?: {
     const pitch = options?.pitch ?? 1.0;
     const rate = options?.rate ?? 1.0;
 
-    if (useNativeSpeech) {
-        return new Promise((resolve) => {
-            nativeSpeechService.setTTSCallbacks(
-                () => updateState('speaking'),
-                () => {
-                    updateState('idle');
-                    resolve();
-                },
-                () => {
-                    updateState('idle');
-                    resolve();
-                }
-            );
-            nativeSpeechService.speak(text, { pitch, rate });
-        });
-    } else {
-        return new Promise((resolve) => {
-            Speech.speak(text, {
-                language: 'en',
-                pitch,
-                rate,
-                onDone: () => {
-                    updateState('idle');
-                    resolve();
-                },
-                onError: () => {
-                    updateState('idle');
-                    resolve();
-                },
-            });
-        });
-    }
+    return new Promise((resolve) => {
+        nativeSpeechService.setTTSCallbacks(
+            () => updateState('speaking'),
+            () => {
+                updateState('idle');
+                resolve();
+            },
+            () => {
+                updateState('idle');
+                resolve();
+            }
+        );
+        nativeSpeechService.speak(text, { pitch, rate });
+    });
 }
 
 //------This Function handles the Stop Speaking---------
 export async function stopSpeaking(): Promise<void> {
-    if (useNativeSpeech) {
-        await nativeSpeechService.stopSpeaking();
-    } else {
-        Speech.stop();
-    }
+    await nativeSpeechService.stopSpeaking();
     updateState('idle');
 }
 

@@ -15,6 +15,7 @@ from app.services.microphone import mic_service
 from app.services.discovery import _get_local_ip
 from app.services.backend_client import get_backend_client
 from app.core.config import settings
+from app.core.pairing_store import normalize_backend_url, save_pairing_config
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,8 @@ _conversation_history: Dict[str, List[Dict[str, str]]] = {}
 _auto_face_recognition_enabled = False
 _auto_face_recognition_task: Optional[asyncio.Task] = None
 _last_known_people: Dict[str, Dict[str, Any]] = {}
+_auto_face_candidate_hits: Dict[str, int] = {}
+_last_face_broadcast: Dict[str, float] = {}
 _last_detection_time: float = 0
 _last_auth_token: str = ""
 _last_patient_uid: str = ""
@@ -111,36 +114,77 @@ async def _run_auto_face_recognition():
             if not results:
                 continue
             
+            known_keys_in_frame = set()
             for person in results:
                 if person.get("name") and person.get("name") != "unknown":
                     person_name = person.get("name", "")
+                    person_id = person.get("person_id", "")
+                    confidence = float(person.get("confidence", 0.0))
+                    person_key = f"{person_id}:{person_name}"
+                    known_keys_in_frame.add(person_key)
+
+                    hit_count = _auto_face_candidate_hits.get(person_key, 0) + 1
+                    _auto_face_candidate_hits[person_key] = hit_count
+
                     _last_known_people[person_name] = {
                         "name": person_name,
                         "relationship": person.get("relationship", ""),
-                        "confidence": person.get("confidence", 0.0),
+                        "confidence": confidence,
                         "last_seen": current_time,
-                        "person_id": person.get("person_id", ""),
+                        "person_id": person_id,
+                        "match_margin": person.get("match_margin", 0.0),
+                        "hit_count": hit_count,
                     }
-                    
-                    notification = {
-                        "type": "face_detected",
-                        "person": {
-                            "name": person_name,
-                            "relationship": person.get("relationship", ""),
-                            "confidence": person.get("confidence", 0.0),
-                        },
-                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(current_time)),
-                    }
-                    
-                    await broadcast(notification)
-                    logger.info(f"[AUTO-FACE] Broadcast: {person_name} identified")
+
+                    broadcast_ready = hit_count >= settings.auto_face_confirmation_count
+                    last_broadcast_at = _last_face_broadcast.get(person_key, 0.0)
+                    cooldown_ok = (
+                        current_time - last_broadcast_at
+                        >= settings.auto_face_broadcast_cooldown_seconds
+                    )
+                    if broadcast_ready and cooldown_ok:
+                        notification = {
+                            "type": "face_detected",
+                            "person": {
+                                "name": person_name,
+                                "relationship": person.get("relationship", ""),
+                                "confidence": confidence,
+                                "match_margin": person.get("match_margin", 0.0),
+                            },
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(current_time)),
+                        }
+
+                        await broadcast(notification)
+                        _last_face_broadcast[person_key] = current_time
+                        logger.info(
+                            "[AUTO-FACE] Broadcast: %s identified "
+                            "(confidence=%.3f hits=%s)",
+                            person_name,
+                            confidence,
+                            hit_count,
+                        )
+
+            stale_candidate_keys = [
+                candidate_key for candidate_key in _auto_face_candidate_hits.keys()
+                if candidate_key not in known_keys_in_frame
+            ]
+            for candidate_key in stale_candidate_keys:
+                _auto_face_candidate_hits[candidate_key] = max(
+                    0,
+                    _auto_face_candidate_hits.get(candidate_key, 0) - 1,
+                )
+                if _auto_face_candidate_hits[candidate_key] == 0:
+                    _auto_face_candidate_hits.pop(candidate_key, None)
             
             _last_detection_time = current_time
             
             if _last_known_people:
                 visible_people = []
                 for name, data in _last_known_people.items():
-                    if current_time - data.get("last_seen", 0) < 300:
+                    if (
+                        current_time - data.get("last_seen", 0)
+                        < settings.auto_face_presence_ttl_seconds
+                    ):
                         visible_people.append(data)
                 
                 if visible_people:
@@ -182,6 +226,8 @@ async def _stop_auto_face_recognition_task():
         except asyncio.CancelledError:
             pass
         _auto_face_recognition_task = None
+        _auto_face_candidate_hits.clear()
+        _last_face_broadcast.clear()
         logger.info("[AUTO-FACE] Background task cancelled")
 
 
@@ -202,8 +248,28 @@ def _validate_message(msg: dict) -> tuple[bool, Optional[str]]:
             return False, "Missing 'auth_token' for connect command"
         if "patient_uid" not in msg:
             return False, "Missing 'patient_uid' for connect command"
+        if "backend_url" in msg and not isinstance(msg.get("backend_url"), str):
+            return False, "'backend_url' must be a string"
     
     return True, None
+
+
+#------This Function applies pairing config from connected client----------
+async def _apply_pairing_runtime_config(patient_uid: str, backend_url: str):
+    try:
+        backend_client = get_backend_client()
+    except RuntimeError:
+        logger.debug("[PAIRING] Backend client not initialized yet")
+        return
+
+    try:
+        success = await backend_client.apply_pairing_config(patient_uid, backend_url)
+        if success:
+            logger.info("[PAIRING] Runtime pairing config synced to backend client")
+        else:
+            logger.warning("[PAIRING] Runtime pairing config received but backend registration failed")
+    except Exception as exc:
+        logger.error("[PAIRING] Failed to apply runtime pairing config: %s", exc)
 
 
 async def _cleanup_stale_connections():
@@ -284,6 +350,8 @@ async def _ws_handler(request):
                     
                     token = msg.get("auth_token", "")
                     patient = msg.get("patient_uid", "")
+                    incoming_backend_url = msg.get("backend_url", "")
+                    normalized_backend_url = normalize_backend_url(incoming_backend_url)
                     
                     if not token or len(token) < 10:
                         logger.warning("[WS] Invalid auth token rejected")
@@ -308,14 +376,47 @@ async def _ws_handler(request):
                         "patient_uid": patient,
                         "auth_token": token,
                     }
+                    settings.patient_uid = patient
+
+                    pairing_sync_started = False
+                    pairing_backend_url = normalized_backend_url
+                    existing_backend_url = normalize_backend_url(settings.backend_url or "")
+
+                    if normalized_backend_url:
+                        settings.backend_url = normalized_backend_url
+                        save_pairing_config(patient, normalized_backend_url)
+                        pairing_sync_started = True
+                        asyncio.create_task(
+                            _apply_pairing_runtime_config(patient, normalized_backend_url)
+                        )
+                    elif (
+                        existing_backend_url
+                        and existing_backend_url not in ("http://localhost:8000", "http://localhost:8001")
+                    ):
+                        pairing_sync_started = True
+                        asyncio.create_task(
+                            _apply_pairing_runtime_config(patient, settings.backend_url)
+                        )
+
                     logger.info(f"[WS] Client authenticated: patient_uid={patient[:8]}...")
+                    if normalized_backend_url:
+                        logger.info("[PAIRING] Received backend_url from paired client: %s", normalized_backend_url)
+                    elif incoming_backend_url:
+                        logger.warning("[PAIRING] Ignoring invalid backend_url from paired client: %s", incoming_backend_url)
                     
                     if settings.auto_face_recognition_enabled and len(_connected_clients) == 1:
                         _auto_face_recognition_enabled = True
                         await _start_auto_face_recognition_task()
                         logger.info("[AUTO-FACE] Started on first client connection")
                     
-                    await ws.send_json({"type": "connected", "status": "ok"})
+                    await ws.send_json(
+                        {
+                            "type": "connected",
+                            "status": "ok",
+                            "pairing_config_applied": pairing_sync_started,
+                            "backend_url": pairing_backend_url or existing_backend_url,
+                        }
+                    )
 
                 elif cmd == "identify":
                     

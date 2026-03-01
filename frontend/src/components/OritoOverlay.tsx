@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
     View,
     Text,
@@ -13,8 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { colors, fonts, spacing, radius } from '../theme';
-import { WakeWordState, isUsingNativeSpeech } from '../services/voiceAssistant';
-import nativeSpeechService from '../services/nativeSpeech';
+import { WakeWordState } from '../services/voiceAssistant';
 import OritoAvatar, { AvatarState } from './OritoAvatar';
 
 const { width, height } = Dimensions.get('window');
@@ -48,12 +47,6 @@ export function OritoOverlay({
     const pulseAnim = useRef(new Animated.Value(1)).current;
     const waveAnim = useRef(new Animated.Value(0)).current;
     const glowAnim = useRef(new Animated.Value(0)).current;
-    
-    const [useNative, setUseNative] = useState(false);
-
-    useEffect(() => {
-        setUseNative(isUsingNativeSpeech());
-    }, [visible]);
 
     useEffect(() => {
         if (visible) {
@@ -229,13 +222,14 @@ export function OritoOverlay({
             if (onStopSpeaking) {
                 onStopSpeaking();
             }
-            if (onStartListening) {
-                onStartListening();
-            }
             return;
         }
         
-        if (state === 'idle' || state === 'processing') {
+        if (state === 'processing') {
+            return;
+        }
+
+        if (state === 'idle') {
             if (onStartListening) {
                 onStartListening();
             }
@@ -248,8 +242,6 @@ export function OritoOverlay({
         if (state === 'speaking') {
             if (onStopSpeaking) {
                 onStopSpeaking();
-            } else if (useNative) {
-                nativeSpeechService.stopSpeaking();
             }
         }
         
@@ -300,7 +292,10 @@ export function OritoOverlay({
                                 },
                             ]}
                         >
-                            <OritoAvatar state={getAvatarState()} size={160} />
+                            <OritoAvatar
+                                state={getAvatarState()}
+                                size={160}
+                            />
                         </Animated.View>
 
                         <Text style={[styles.stateText, { color: getStateColor(!!error) }]}>
@@ -326,7 +321,7 @@ export function OritoOverlay({
                             <View style={styles.hintContainer}>
                                 <Ionicons name="mic-outline" size={20} color="#9CA3AF" />
                                 <Text style={[styles.hintText, { color: '#6B7280' }]}>
-                                     tap the microphone To use the  Ai
+                                    Tap the microphone to use Orito AI
                                 </Text>
                             </View>
                         )}
@@ -336,15 +331,27 @@ export function OritoOverlay({
                         <TouchableOpacity
                             style={[
                                 styles.actionBtn,
-                                { backgroundColor: state === 'idle' ? '#000000' : (state === 'listening' ? '#DC2626' : '#1F2937') },
+                                {
+                                    backgroundColor:
+                                        state === 'idle'
+                                            ? '#000000'
+                                            : state === 'listening'
+                                                ? '#DC2626'
+                                                : '#1F2937',
+                                },
                             ]}
                             onPress={handleMicPress}
+                            disabled={state === 'processing'}
                         >
                             <Ionicons
                                 name={
-                                    state === 'listening' ? 'stop' : 
-                                    state === 'speaking' ? 'stop' : 
-                                    'mic'
+                                    state === 'listening'
+                                        ? 'stop'
+                                        : state === 'processing'
+                                            ? 'hourglass-outline'
+                                            : state === 'speaking'
+                                                ? 'volume-high'
+                                                : 'mic'
                                 }
                                 size={28}
                                 color="#FFFFFF"

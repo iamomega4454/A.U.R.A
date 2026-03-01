@@ -11,19 +11,25 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Any
+from typing import IO, Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
+
 from app.services.camera import camera_service
 from app.services.discovery import discovery_service
-from app.services.backend_client import init_backend_client, get_backend_client
+from app.services.backend_client import init_backend_client
 from app.services.microphone import continuous_mic
 from app.services.conversation import summarize_conversation
 from app.ws_server import start_server, shutdown_streams, _get_local_ip
 from app.core.config import settings
+from app.core.pairing_store import apply_pairing_config_to_settings, normalize_backend_url
 
 
 GREEN = "\033[92m"
@@ -34,9 +40,50 @@ CYAN = "\033[96m"
 RESET = "\033[0m"
 BOLD = "\033[1m"
 
-UPDATE_CHECK_INTERVAL = 300
+
+#------This Function resolves module update interval-------
+def _get_update_interval_seconds() -> int:
+    raw_value = os.getenv("AURAMODULE_UPDATE_CHECK_INTERVAL_SECONDS", "300")
+    try:
+        interval_seconds = int(raw_value)
+    except ValueError:
+        interval_seconds = 300
+    return max(interval_seconds, 60)
+
+
+UPDATE_CHECK_INTERVAL = _get_update_interval_seconds()
+AUTO_GIT_UPDATE_ENABLED = os.getenv("AURAMODULE_AUTO_UPDATE_ENABLED", "true").lower() == "true"
+AUTO_RESTART_ON_UPDATE = os.getenv("AURAMODULE_AUTO_RESTART_ON_UPDATE", "true").lower() == "true"
+MODULE_ROOT = Path(__file__).resolve().parents[1]
+UPDATE_LOCK_PATH = Path("/tmp/aura_repo_update.lock")
 
 _system_info: Dict[str, Any] = {}
+_update_monitor_thread: Optional[threading.Thread] = None
+_update_monitor_stop_event = threading.Event()
+_update_monitor_lock = threading.Lock()
+
+
+#------This Function acquires process-level update lock-------
+def _acquire_process_update_lock() -> Optional[IO[str]]:
+    if fcntl is None:
+        return None
+    lock_file = open(UPDATE_LOCK_PATH, "w")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_file
+    except OSError:
+        lock_file.close()
+        return None
+
+
+#------This Function releases process-level update lock-------
+def _release_process_update_lock(lock_file: Optional[IO[str]]) -> None:
+    if fcntl is None or lock_file is None:
+        return
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_file.close()
 
 
 #------This Class handles the System Hardware Detection---------
@@ -613,77 +660,171 @@ def check_models() -> bool:
             return False
 
 
-#------This Function checks git for updates-------
-def check_for_updates():
+#------This Function runs git commands for auto-update-------
+def _run_git_command(args: List[str], timeout: int = 20) -> Optional[subprocess.CompletedProcess]:
     try:
-        result = subprocess.run(
-            ["git", "fetch", "--dry-run"],
+        return subprocess.run(
+            ["git"] + args,
+            cwd=str(MODULE_ROOT),
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=timeout,
+            check=False,
         )
-        
-        if result.stdout or result.stderr:
-            return True
-        return False
-        
     except FileNotFoundError:
-        pass
+        logging.getLogger(__name__).warning("[UPDATE] git executable not found")
     except subprocess.TimeoutExpired:
-        pass
-    except Exception:
-        pass
-    
-    return False
+        logging.getLogger(__name__).warning("[UPDATE] git command timed out: git %s", " ".join(args))
+    except Exception as exc:
+        logging.getLogger(__name__).warning("[UPDATE] git command failed: git %s (%s)", " ".join(args), exc)
+    return None
+
+
+#------This Function checks whether module runs inside a git repository-------
+def _is_git_repository() -> bool:
+    result = _run_git_command(["rev-parse", "--is-inside-work-tree"])
+    if result is None or result.returncode != 0:
+        return False
+    return result.stdout.strip() == "true"
+
+
+#------This Function resolves the upstream tracking branch-------
+def _get_tracking_branch() -> Optional[str]:
+    result = _run_git_command(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    if result is None or result.returncode != 0:
+        return None
+    branch = result.stdout.strip()
+    return branch if branch else None
+
+
+#------This Function checks whether local working tree is clean-------
+def _is_work_tree_clean() -> bool:
+    result = _run_git_command(["status", "--porcelain"])
+    if result is None or result.returncode != 0:
+        return False
+    return result.stdout.strip() == ""
+
+
+#------This Function checks git for updates-------
+def check_for_updates() -> bool:
+    tracking_branch = _get_tracking_branch()
+    if tracking_branch is None:
+        logging.getLogger(__name__).debug("[UPDATE] Upstream tracking branch is not configured")
+        return False
+
+    fetch_result = _run_git_command(["fetch", "--prune", "--quiet"])
+    if fetch_result is None or fetch_result.returncode != 0:
+        error_text = fetch_result.stderr.strip() if fetch_result else "unknown fetch error"
+        logging.getLogger(__name__).warning("[UPDATE] Failed to fetch remote updates: %s", error_text)
+        return False
+
+    local_head_result = _run_git_command(["rev-parse", "HEAD"])
+    remote_head_result = _run_git_command(["rev-parse", tracking_branch])
+    if (
+        local_head_result is None
+        or remote_head_result is None
+        or local_head_result.returncode != 0
+        or remote_head_result.returncode != 0
+    ):
+        return False
+
+    local_sha = local_head_result.stdout.strip()
+    remote_sha = remote_head_result.stdout.strip()
+    return bool(local_sha and remote_sha and local_sha != remote_sha)
+
+
+#------This Function restarts the module to apply updates-------
+def _restart_after_update() -> None:
+    if not AUTO_RESTART_ON_UPDATE:
+        print_status("●", "Updates pulled. Restart the module to apply changes.", YELLOW)
+        logging.getLogger(__name__).warning("[UPDATE] Auto-restart disabled; manual restart required")
+        return
+
+    print(f"\n{GREEN}{BOLD}Restarting module to apply updates...{RESET}\n")
+    logging.getLogger(__name__).info("[UPDATE] Restarting process with os.execv")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 #------This Function pulls git updates-------
-def pull_updates():
-    try:
-        result = subprocess.run(
-            ["git", "pull"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        
-        if result.returncode == 0:
-            print_status("●", "Updates applied successfully")
-            return True
-        else:
-            print_status("●", f"Update failed: {result.stderr}", RED)
-            return False
-            
-    except Exception as e:
-        print_status("●", f"Error pulling updates: {e}", RED)
+def pull_updates() -> bool:
+    if not _is_work_tree_clean():
+        print_status("●", "Local changes detected; skipping auto-update pull", YELLOW)
+        logging.getLogger(__name__).warning("[UPDATE] Working tree is dirty; pull skipped")
         return False
+
+    pull_result = _run_git_command(["pull", "--ff-only"], timeout=60)
+    if pull_result is None:
+        return False
+
+    if pull_result.returncode == 0:
+        print_status("●", "Updates applied successfully")
+        return True
+
+    error_text = pull_result.stderr.strip() or pull_result.stdout.strip() or "unknown pull error"
+    print_status("●", f"Update failed: {error_text}", RED)
+    logging.getLogger(__name__).error("[UPDATE] git pull failed: %s", error_text)
+    return False
 
 
 #------This Function update monitor thread-------
-def update_monitor():
-    while True:
-        time.sleep(UPDATE_CHECK_INTERVAL)
-        
+def update_monitor() -> None:
+    logger = logging.getLogger(__name__)
+    while not _update_monitor_stop_event.wait(UPDATE_CHECK_INTERVAL):
         try:
-            result = subprocess.run(
-                ["git", "fetch", "--dry-run"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            
-            if result.stdout or result.stderr:
-                print(f"\n\n{YELLOW}{BOLD}═══ UPDATE AVAILABLE ═══{RESET}")
-                print_status("●", "New commits detected - updating...")
-                
-                if pull_updates():
-                    print(f"\n{GREEN}{BOLD}Restarting module...{RESET}\n")
-                    python = sys.executable
-                    subprocess.Popen([python] + sys.argv)
-                    sys.exit(0)
-                    
-        except Exception:
-            pass
+            with _update_monitor_lock:
+                lock_file = _acquire_process_update_lock()
+                if fcntl is not None and lock_file is None:
+                    logger.debug("[UPDATE] Another process is running an update cycle; skipping this interval")
+                    continue
+                try:
+                    logger.info("[UPDATE] Checking for updates...")
+                    if not check_for_updates():
+                        continue
+
+                    print(f"\n\n{YELLOW}{BOLD}═══ UPDATE AVAILABLE ═══{RESET}")
+                    print_status("●", "New commits detected - updating...")
+                    if pull_updates():
+                        _restart_after_update()
+                finally:
+                    _release_process_update_lock(lock_file)
+        except Exception as exc:
+            logger.warning("[UPDATE] Update monitor cycle failed: %s", exc)
+
+
+#------This Function starts update monitor thread-------
+def start_update_monitor() -> bool:
+    global _update_monitor_thread
+
+    if not AUTO_GIT_UPDATE_ENABLED:
+        logging.getLogger(__name__).info("[UPDATE] Auto-update monitor disabled (AURAMODULE_AUTO_UPDATE_ENABLED=false)")
+        return False
+
+    if not _is_git_repository():
+        logging.getLogger(__name__).warning("[UPDATE] Auto-update monitor disabled: module is not inside a git repository")
+        return False
+
+    if _get_tracking_branch() is None:
+        logging.getLogger(__name__).warning("[UPDATE] Auto-update monitor disabled: no upstream tracking branch configured")
+        return False
+
+    if _update_monitor_thread and _update_monitor_thread.is_alive():
+        return True
+
+    _update_monitor_stop_event.clear()
+    _update_monitor_thread = threading.Thread(
+        target=update_monitor,
+        name="auramodule-update-monitor",
+        daemon=True,
+    )
+    _update_monitor_thread.start()
+    return True
+
+
+#------This Function stops update monitor thread-------
+def stop_update_monitor() -> None:
+    if _update_monitor_thread and _update_monitor_thread.is_alive():
+        _update_monitor_stop_event.set()
+        _update_monitor_thread.join(timeout=2)
 
 
 #------This Function handles the Main Application----------
@@ -720,13 +861,12 @@ async def main():
     check_pyaudio()
     ollama_ok = check_ollama()
     check_models()
-    
-    if not settings.validate_required_settings():
-        logger = logging.getLogger(__name__)
-        logger.error("[AURA] Configuration validation failed. Please check your .env file.")
-        logger.error("[AURA] Required settings: PATIENT_UID, BACKEND_URL")
-        print(f"\n{RED}✕{RESET} Please configure .env file before starting")
-        sys.exit(1)
+
+    apply_pairing_config_to_settings(overwrite_existing=False)
+    runtime_config_ready = bool(
+        (settings.patient_uid or "").strip()
+        and normalize_backend_url(settings.backend_url or "")
+    )
     
     print_section("Environment Configuration")
     
@@ -742,6 +882,7 @@ async def main():
         print_status("●", f"PATIENT_UID: {CYAN}{patient_uid[:8]}...{RESET}")
     else:
         print_status("●", "PATIENT_UID not configured", RED)
+        print_status("●", "Waiting for paired device to provide patient UID", YELLOW)
     
     print(f"\n{BLUE}{BOLD}════════════════════════════════════{RESET}")
     print(f"{BLUE}{BOLD}  Status Summary{RESET}")
@@ -749,10 +890,21 @@ async def main():
     
     print_status("●", "Environment")
     print_status("●" if ollama_ok else "●", "Ollama + Models", GREEN if ollama_ok else YELLOW)
-    print_status("●", "Update Monitor (background)")
     
     setup_logging()
     logger = logging.getLogger(__name__)
+
+    if start_update_monitor():
+        print_status("●", "Update monitor running in background")
+    else:
+        print_status("●", "Update monitor disabled", YELLOW)
+
+    if not runtime_config_ready:
+        logger.warning(
+            "[AURA] Starting in unpaired mode. "
+            "Connect from paired app to push patient_uid and backend_url."
+        )
+        print_status("●", "Running in unpaired mode", YELLOW)
     
     print_section("Starting Services")
     
@@ -791,22 +943,36 @@ async def main():
                 "[AURA] Set DEMO_MODE=true if you want full demo-mode behavior"
             )
 
+    try:
+        from app.services.speech import get_whisper_model
+
+        logger.info("[AURA] Preloading Whisper STT model...")
+        get_whisper_model()
+        print_status("●", "Whisper STT model ready")
+    except Exception as e:
+        logger.error(f"[AURA] Failed to preload Whisper model: {e}")
+        logger.warning("[AURA] Continuing; live transcription may be delayed on first decode")
+
     
     backend_client = init_backend_client(settings.patient_uid)
 
     local_ip = _get_local_ip()
 
-    logger.info(f"[AURA] Registering with backend at {settings.backend_url}...")
-    print_status("●", f"Registering with backend at {settings.backend_url}...")
-    registered = await backend_client.register(local_ip, settings.http_port)
-    
-    if not registered:
-        logger.warning("[AURA] Failed to register with backend")
-        print_status("●", "Failed to register with backend", YELLOW)
-        print(f"  {YELLOW}!{RESET} Module will continue running but some features may not work")
+    if runtime_config_ready:
+        logger.info(f"[AURA] Registering with backend at {settings.backend_url}...")
+        print_status("●", f"Registering with backend at {settings.backend_url}...")
+        registered = await backend_client.register(local_ip, settings.http_port)
+        
+        if not registered:
+            logger.warning("[AURA] Failed to register with backend")
+            print_status("●", "Failed to register with backend", YELLOW)
+            print(f"  {YELLOW}!{RESET} Module will continue running but some features may not work")
+        else:
+            await backend_client.start_heartbeat()
+            print_status("●", f"Heartbeat task started (every {settings.heartbeat_interval}s)")
     else:
-        await backend_client.start_heartbeat()
-        print_status("●", f"Heartbeat task started (every {settings.heartbeat_interval}s)")
+        logger.info("[AURA] Backend registration deferred until pairing config is received")
+        print_status("●", "Backend registration deferred until pairing", YELLOW)
 
     camera_service.start()
     print_status("●", "Camera started (always-on mode)")
@@ -831,7 +997,10 @@ async def main():
         event_loop=asyncio.get_running_loop(),
     )
     continuous_microphone.start()
-    print_status("●", "Continuous microphone started (10-minute summarization)")
+    print_status(
+        "●",
+        f"Continuous microphone started ({settings.continuous_summary_interval_minutes}-minute summarization)",
+    )
 
     discovery_service.start()
     print_status("●", "mDNS discovery broadcasting")
@@ -860,6 +1029,8 @@ async def main():
 
     print("\n" + YELLOW + "Shutting down..." + RESET)
 
+    stop_update_monitor()
+
     await backend_client.stop_heartbeat()
 
     await shutdown_streams()
@@ -876,9 +1047,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    monitor_thread = threading.Thread(target=update_monitor, daemon=True)
-    monitor_thread.start()
-    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

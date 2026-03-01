@@ -22,6 +22,7 @@ LogBox.ignoreLogs([
     'Maximum call stack size exceeded',
     'dnssd-advertise',
     'Request failed with status code 401',
+    'THREE.THREE.Clock: This module has been deprecated. Please use THREE.Timer instead.',
     "The screen 'index' was removed natively but didn't get removed from JS state",
 ]);
 

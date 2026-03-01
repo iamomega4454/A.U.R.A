@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 OLLAMA_TIMEOUT = 120.0
 STREAM_TIMEOUT = 180.0
 BACKEND_TIMEOUT = 15.0
+SUMMARY_MAX_INPUT_CHARS = 24000
 
 MAX_RETRIES = 3
 INITIAL_BACKOFF = 1.0
@@ -537,14 +538,37 @@ async def summarize_conversation(
         return None
     
     
-    full_text = " ".join(transcripts)
+    cleaned_transcripts = []
+    seen_chunks = set()
+    for chunk in transcripts:
+        normalized_chunk = " ".join((chunk or "").split())
+        if len(normalized_chunk) < settings.continuous_min_transcript_chars:
+            continue
+        if normalized_chunk in seen_chunks:
+            continue
+        seen_chunks.add(normalized_chunk)
+        cleaned_transcripts.append(normalized_chunk)
+
+    if not cleaned_transcripts:
+        logger.debug("[CONV] No valid transcript chunks after cleanup")
+        return None
+
+    full_text = " ".join(cleaned_transcripts)
     
     
     if len(full_text.strip()) < 20:
         logger.debug("[CONV] Transcript too short to summarize")
         return None
+
+    if len(full_text) > SUMMARY_MAX_INPUT_CHARS:
+        logger.info(
+            "[CONV] Summary input too large (%s chars). Truncating to %s chars.",
+            len(full_text),
+            SUMMARY_MAX_INPUT_CHARS,
+        )
+        full_text = full_text[-SUMMARY_MAX_INPUT_CHARS:]
     
-    logger.info(f"[CONV] Summarizing {len(transcripts)} transcripts ({len(full_text)} chars)...")
+    logger.info(f"[CONV] Summarizing {len(cleaned_transcripts)} transcripts ({len(full_text)} chars)...")
     
     
     summary, error = await _call_summarization_ollama(full_text)
@@ -562,7 +586,7 @@ async def summarize_conversation(
     
     await _send_summary_to_backend(
         summary=summary,
-        transcript_count=len(transcripts),
+        transcript_count=len(cleaned_transcripts),
         patient_uid=patient_uid,
         auth_token=auth_token,
     )
