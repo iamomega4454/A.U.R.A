@@ -4,13 +4,13 @@ import json
 import logging
 import socket
 import time
-from typing import Optional, Set, Dict, Any
+from typing import Optional, Set, Dict, Any, List
 from aiohttp import web
 import aiohttp
 from app.services.camera import camera_service
 from app.services.face_recognition import identify_person, detect_and_crop_faces
 from app.services.speech import transcribe_audio
-from app.services.conversation import analyze_conversation
+from app.services.conversation import analyze_conversation, streaming_chat
 from app.services.microphone import mic_service
 from app.services.discovery import _get_local_ip
 from app.core.config import settings
@@ -33,6 +33,9 @@ _latest_transcript: Dict[str, Any] = {
     "analysis": {},
 }
 
+_streaming_service = None
+
+_conversation_history: Dict[str, List[Dict[str, str]]] = {}
 
 _auto_face_recognition_enabled = False
 _auto_face_recognition_task: Optional[asyncio.Task] = None
@@ -455,6 +458,130 @@ async def _ws_handler(request):
                         "count": len(recent_people),
                     })
 
+                elif cmd == "streaming_chat":
+                    auth = _session_auth.get(ws, {})
+                    if not auth:
+                        await ws.send_json({
+                            "type": "streaming_chat",
+                            "error": "not_authenticated"
+                        })
+                        continue
+                    
+                    message = msg.get("message", "")
+                    enable_tools = msg.get("enable_tools", False)
+                    clear_history = msg.get("clear_history", False)
+                    
+                    if not message:
+                        await ws.send_json({
+                            "type": "streaming_chat",
+                            "error": "empty_message"
+                        })
+                        continue
+                    
+                    patient_uid = auth.get("patient_uid", "")
+                    
+                    if clear_history:
+                        _conversation_history[patient_uid] = []
+                    
+                    history = _conversation_history.get(patient_uid, [])
+                    
+                    if settings.ollama_streaming:
+                        full_response = ""
+                        
+                        async def on_token(token: str):
+                            nonlocal full_response
+                            full_response += token
+                            try:
+                                await ws.send_json({
+                                    "type": "streaming_token",
+                                    "content": token,
+                                })
+                            except Exception:
+                                pass
+                        
+                        result = await streaming_chat(
+                            user_message=message,
+                            conversation_history=history,
+                            enable_tools=enable_tools,
+                            on_token=on_token,
+                        )
+                        
+                        if result.get("success"):
+                            history.append({"role": "user", "content": message})
+                            history.append({"role": "assistant", "content": result.get("content", "")})
+                            _conversation_history[patient_uid] = history[-20:]
+                            
+                            await ws.send_json({
+                                "type": "streaming_chat_done",
+                                "content": result.get("content", ""),
+                                "tool_calls": result.get("tool_calls"),
+                            })
+                        else:
+                            await ws.send_json({
+                                "type": "streaming_chat_error",
+                                "error": result.get("error", "Unknown error"),
+                            })
+                    else:
+                        await ws.send_json({
+                            "type": "streaming_chat",
+                            "error": "streaming_disabled",
+                            "message": "Enable ollama_streaming in config",
+                        })
+
+                elif cmd == "get_conversation_history":
+                    auth = _session_auth.get(ws, {})
+                    if not auth:
+                        await ws.send_json({
+                            "type": "conversation_history",
+                            "error": "not_authenticated"
+                        })
+                        continue
+                    
+                    patient_uid = auth.get("patient_uid", "")
+                    history = _conversation_history.get(patient_uid, [])
+                    await ws.send_json({
+                        "type": "conversation_history",
+                        "history": history,
+                        "count": len(history),
+                    })
+
+                elif cmd == "clear_conversation_history":
+                    auth = _session_auth.get(ws, {})
+                    if not auth:
+                        await ws.send_json({
+                            "type": "conversation_history_cleared",
+                            "error": "not_authenticated"
+                        })
+                        continue
+                    
+                    patient_uid = auth.get("patient_uid", "")
+                    _conversation_history[patient_uid] = []
+                    await ws.send_json({
+                        "type": "conversation_history_cleared",
+                    })
+
+                elif cmd == "live_transcription_start":
+                    auth = _session_auth.get(ws, {})
+                    if not auth:
+                        await ws.send_json({
+                            "type": "live_transcription",
+                            "error": "not_authenticated"
+                        })
+                        continue
+                    
+                    mic_service.start()
+                    await ws.send_json({
+                        "type": "live_transcription",
+                        "status": "started",
+                    })
+
+                elif cmd == "live_transcription_stop":
+                    mic_service.stop()
+                    await ws.send_json({
+                        "type": "live_transcription",
+                        "status": "stopped",
+                    })
+
                 else:
                     logger.warning(f"[WS] Unknown command: {cmd}")
                     await ws.send_json({
@@ -517,6 +644,7 @@ async def broadcast(message: dict):
 
 
 
+
 async def _health_handler(request):
     local_ip = _get_local_ip()
     return web.json_response(
@@ -531,6 +659,9 @@ async def _health_handler(request):
             "camera": camera_service.is_running,
             "mic": mic_service.is_running,
             "connected_clients": len(_connected_clients),
+            "streaming_enabled": settings.ollama_streaming,
+            "vad_enabled": settings.enable_vad,
+            "llm_model": settings.ollama_model,
         }
     )
 
@@ -554,6 +685,13 @@ async def _status_handler(request):
             "models": {
                 "face_recognition": "buffalo_l",
                 "speech": settings.whisper_model,
+                "whisper_size": settings.whisper_model_size,
+                "llm": settings.ollama_model,
+            },
+            "streaming": {
+                "enabled": settings.ollama_streaming,
+                "vad_enabled": settings.enable_vad,
+                "buffer_seconds": settings.audio_buffer_seconds,
             },
             "backend_url": settings.backend_url,
         }

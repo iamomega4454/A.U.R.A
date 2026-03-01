@@ -1,6 +1,8 @@
 
 import asyncio
 import logging
+import os
+import platform
 import re
 import signal
 import subprocess
@@ -8,6 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Dict, Any
 
 from dotenv import load_dotenv
 
@@ -32,6 +35,152 @@ BOLD = "\033[1m"
 
 UPDATE_CHECK_INTERVAL = 300
 
+_system_info: Dict[str, Any] = {}
+
+
+#------This Class handles the System Hardware Detection---------
+def detect_hardware() -> Dict[str, Any]:
+    info = {
+        "platform": platform.system(),
+        "architecture": platform.machine(),
+        "processor": platform.processor(),
+        "is_raspberry_pi": False,
+        "pi_model": None,
+        "cpu_cores": os.cpu_count() or 1,
+        "has_gpu": False,
+        "gpu_info": None,
+    }
+    
+    if Path("/proc/device-tree/model").exists():
+        try:
+            with open("/proc/device-tree/model", "r") as f:
+                model = f.read().strip()
+                if "Raspberry Pi" in model:
+                    info["is_raspberry_pi"] = True
+                    if "Pi 5" in model:
+                        info["pi_model"] = "5"
+                    elif "Pi 4" in model:
+                        info["pi_model"] = "4"
+                    elif "Pi 3" in model:
+                        info["pi_model"] = "3"
+                    elif "Pi 2" in model:
+                        info["pi_model"] = "2"
+        except Exception:
+            pass
+    
+    try:
+        result = subprocess.run(
+            ["vcgencmd", "get_config", "int"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            info["has_gpu"] = True
+            info["gpu_info"] = "Broadcom VideoCore"
+    except FileNotFoundError:
+        pass
+    
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            info["has_gpu"] = True
+            info["gpu_info"] = result.stdout.strip()
+    except FileNotFoundError:
+        pass
+    
+    return info
+
+
+#------This Function checks system resources---------
+def check_system_resources() -> Dict[str, Any]:
+    resources = {
+        "disk_space_gb": 0,
+        "memory_total_gb": 0,
+        "memory_available_gb": 0,
+        "cpu_usage_percent": 0,
+        "ok": True,
+    }
+    
+    try:
+        result = subprocess.run(
+            ["df", "-BG", "/"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split("\n")
+            if len(lines) > 1:
+                match = re.search(r"(\d+)G", lines[1])
+                if match:
+                    resources["disk_space_gb"] = int(match.group(1))
+                    resources["ok"] = resources["disk_space_gb"] >= 2
+    except Exception:
+        pass
+    
+    try:
+        result = subprocess.run(
+            ["free", "-g"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split("\n")
+            if len(lines) > 1:
+                parts = lines[1].split()
+                if len(parts) >= 2:
+                    resources["memory_total_gb"] = int(parts[1])
+                    resources["memory_available_gb"] = int(parts[6])
+    except Exception:
+        pass
+    
+    try:
+        result = subprocess.run(
+            ["top", "-bn1"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.split("\n"):
+                if "Cpu(s)" in line:
+                    match = re.search(r"(\d+\.\d+)\s*id", line)
+                    if match:
+                        idle = float(match.group(1))
+                        resources["cpu_usage_percent"] = round(100 - idle, 1)
+                    break
+    except Exception:
+        pass
+    
+    return resources
+
+
+#------This Function checks/installs pip---------
+def check_pip():
+    print_section("Python Package Manager")
+    
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            current_version = result.stdout.strip().split()[1]
+            print_status("●", f"pip installed: {CYAN}{current_version}{RESET}")
+            return True
+    except Exception as e:
+        print_status("●", f"pip check failed: {e}", YELLOW)
+    return False
+
 
 #------This Function handles the Logging Setup---------
 def setup_logging():
@@ -53,12 +202,18 @@ def setup_logging():
     logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 
-#------This Function displays banner-------
-def show_banner():
+#------This Function displays banner with system info-------
+def show_banner(system_info: Dict[str, Any] = None):
+    pi_info = ""
+    if system_info and system_info.get("is_raspberry_pi"):
+        model = system_info.get("pi_model", "unknown")
+        gpu = " + GPU" if system_info.get("has_gpu") else ""
+        pi_info = f" [Raspberry Pi {model}{gpu}]"
+    
     print(f"""
 {CYAN}{BOLD}╔═══════════════════════════════════════════════════════════╗
-║          A . U . R . A    M O D U L E              ║
-║                   IoT Device Hub                     ║
+║          A . U . R . A    M O D U L E   2026{pi_info}          ║
+║                   IoT Device Hub                             ║
 ╚═══════════════════════════════════════════════════════════╝{RESET}
     """)
 
@@ -221,9 +376,48 @@ def pull_model_with_progress(model_name: str) -> bool:
     return stream_ollama_pull(model_name)
 
 
-#------This Function checks/installs Ollama-------
+#------This Function updates Ollama model automatically----------
+def update_ollama_model(model_name: str) -> bool:
+    print(f"  {CYAN}→{RESET} Updating {model_name}...")
+    
+    try:
+        process = subprocess.Popen(
+            ["ollama", "pull", model_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        
+        start_time = time.time()
+        for line in process.stdout:
+            line = line.strip()
+            if "already up to date" in line.lower():
+                print_status("●", f"{model_name} is up to date")
+                process.terminate()
+                return True
+            elif "downloading" in line.lower():
+                elapsed = time.time() - start_time
+                print(f"\r  {CYAN}▓{RESET} Downloading... {elapsed:.1f}s    ", end="", flush=True)
+        
+        process.wait()
+        print()
+        
+        if process.returncode == 0:
+            print_status("●", f"{model_name} updated successfully")
+            return True
+        return False
+        
+    except Exception as e:
+        print(f"\n  {RED}!{RESET} Update error: {e}")
+        return False
+
+
+#------This Function checks/installs Ollama with auto-update--------
 def check_ollama():
     print_section("Ollama Installation")
+    
+    check_pip()
     
     try:
         result = subprocess.run(
@@ -235,7 +429,7 @@ def check_ollama():
         if result.returncode == 0:
             print_status("●", f"Ollama installed: {CYAN}{result.stdout.strip()}{RESET}")
             
-            print(f"\n  {BLUE}›{RESET} Checking gemma3:4b model...")
+            print(f"\n  {BLUE}›{RESET} Checking {settings.ollama_model} model...")
             model_result = subprocess.run(
                 ["ollama", "list"],
                 capture_output=True,
@@ -243,14 +437,21 @@ def check_ollama():
                 timeout=10,
             )
             
-            if "gemma3:4b" in model_result.stdout:
-                print_status("●", "gemma3:4b model installed")
-            else:
-                print_status("●", "gemma3:4b model not found", YELLOW)
-                print(f"  {CYAN}→{RESET} Pulling gemma3:4b model...")
+            model_found = settings.ollama_model.split(":")[0] in model_result.stdout
+            
+            if model_found:
+                print_status("●", f"{settings.ollama_model} model installed")
                 
-                if pull_model_with_progress("gemma3:4b"):
-                    print_status("●", "gemma3:4b model downloaded successfully")
+                if settings.auto_update_models:
+                    print(f"\n  {BLUE}›{RESET} Checking for model updates...")
+                    if update_ollama_model(settings.ollama_model):
+                        print_status("●", f"{settings.ollama_model} is up to date")
+            else:
+                print_status("●", f"{settings.ollama_model} model not found", YELLOW)
+                print(f"  {CYAN}→{RESET} Pulling {settings.ollama_model} model...")
+                
+                if pull_model_with_progress(settings.ollama_model):
+                    print_status("●", f"{settings.ollama_model} model downloaded successfully")
                 else:
                     print_status("●", "Failed to pull model", RED)
                     return False
@@ -269,37 +470,58 @@ def check_ollama():
     print_status("●", "Ollama not installed", YELLOW)
     print(f"  {CYAN}→{RESET} Installing Ollama...")
     
-    try:
-        install_cmd = "curl -fsSL https://ollama.com/install.sh | sh"
-        install_result = subprocess.run(
-            install_cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        
-        if install_result.returncode != 0:
-            print_status("●", f"Ollama installation failed", RED)
-            print(f"  {RED}!{RESET} {install_result.stderr}")
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            install_cmd = "curl -fsSL https://ollama.com/install.sh | sh"
+            install_result = subprocess.run(
+                install_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            
+            if install_result.returncode != 0:
+                print_status("●", f"Ollama installation failed", RED)
+                print(f"  {RED}!{RESET} {install_result.stderr}")
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"  {YELLOW}→{RESET} Retrying in 5 seconds... ({retry_count}/{max_retries})")
+                    time.sleep(5)
+                    continue
+                return False
+            
+            print_status("●", "Ollama installed successfully")
+            
+            print(f"\n  {BLUE}›{RESET} Pulling {settings.ollama_model} model...")
+            if pull_model_with_progress(settings.ollama_model):
+                print_status("●", f"{settings.ollama_model} model downloaded successfully")
+            else:
+                print_status("●", "Model pull failed - will retry on first use", YELLOW)
+            
+            return True
+            
+        except subprocess.TimeoutExpired:
+            print_status("●", "Ollama installation timed out", RED)
+            retry_count += 1
+            if retry_count < max_retries:
+                print(f"  {YELLOW}→{RESET} Retrying in 10 seconds... ({retry_count}/{max_retries})")
+                time.sleep(10)
+                continue
             return False
-        
-        print_status("●", "Ollama installed successfully")
-        
-        print(f"\n  {BLUE}›{RESET} Pulling gemma3:4b model...")
-        if pull_model_with_progress("gemma3:4b"):
-            print_status("●", "gemma3:4b model downloaded successfully")
-        else:
-            print_status("●", "Model pull failed - will retry on first use", YELLOW)
-        
-        return True
-        
-    except subprocess.TimeoutExpired:
-        print_status("●", "Ollama installation timed out", RED)
-        return False
-    except Exception as e:
-        print_status("●", f"Installation error: {e}", RED)
-        return False
+        except Exception as e:
+            print_status("●", f"Installation error: {e}", RED)
+            retry_count += 1
+            if retry_count < max_retries:
+                print(f"  {YELLOW}→{RESET} Retrying in 5 seconds... ({retry_count}/{max_retries})")
+                time.sleep(5)
+                continue
+            return False
+    
+    return False
 
 
 #------This Function checks InsightFace model----------
@@ -439,9 +661,34 @@ def update_monitor():
 
 #------This Function handles the Main Application----------
 async def main():
-    show_banner()
+    global _system_info
+    
+    _system_info = detect_hardware()
+    show_banner(_system_info)
     
     print(f"{CYAN}Initializing system checks...{RESET}\n")
+    
+    print_section("System Information")
+    print_status("●", f"Platform: {CYAN}{_system_info['platform']}{RESET}")
+    print_status("●", f"Architecture: {CYAN}{_system_info['architecture']}{RESET}")
+    print_status("●", f"CPU Cores: {CYAN}{_system_info['cpu_cores']}{RESET}")
+    
+    if _system_info.get("is_raspberry_pi"):
+        print_status("●", f"Hardware: {CYAN}Raspberry Pi {_system_info['pi_model']}{RESET}")
+        print_status("●", f"GPU: {CYAN}{_system_info.get('gpu_info', 'None')}{RESET}")
+    else:
+        print_status("●", f"Processor: {CYAN}{_system_info.get('processor', 'Unknown')[:50]}{RESET}")
+        print_status("●", f"GPU: {CYAN}{_system_info.get('gpu_info', 'None')}{RESET}")
+    
+    print()
+    resources = check_system_resources()
+    print_section("System Resources")
+    print_status("●", f"Disk Space: {CYAN}{resources['disk_space_gb']} GB{RESET}")
+    print_status("●", f"Memory: {CYAN}{resources['memory_available_gb']} GB available / {resources['memory_total_gb']} GB total{RESET}")
+    print_status("●", f"CPU Usage: {CYAN}{resources['cpu_usage_percent']}%{RESET}")
+    
+    if not resources["ok"]:
+        print_status("●", "Low disk space! At least 2GB recommended", YELLOW)
     
     check_pyaudio()
     ollama_ok = check_ollama()
@@ -485,8 +732,10 @@ async def main():
     print_status("●", f"Patient UID: {settings.patient_uid[:8]}..." if settings.patient_uid else "NOT SET")
     print_status("●", f"Server port: {settings.http_port}")
     print_status("●", f"Camera index: {settings.camera_index}")
-    print_status("●", f"Whisper model: {settings.whisper_model}")
+    print_status("●", f"Whisper model: {settings.whisper_model} ({settings.whisper_model_size})")
     print_status("●", f"Ollama: {settings.ollama_url} ({settings.ollama_model})")
+    print_status("●", f"Streaming: {settings.ollama_streaming}")
+    print_status("●", f"VAD: {settings.enable_vad}")
     print_status("●", f"Backend: {settings.backend_url}")
     print_status("●", f"Demo mode: {settings.demo_mode}")
     print()

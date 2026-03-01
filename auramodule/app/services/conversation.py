@@ -4,15 +4,19 @@ import logging
 import httpx
 import asyncio
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, AsyncGenerator, Callable
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 OLLAMA_TIMEOUT = 120.0
-
+STREAM_TIMEOUT = 180.0
 BACKEND_TIMEOUT = 15.0
+
+MAX_RETRIES = 3
+INITIAL_BACKOFF = 1.0
+MAX_BACKOFF = 16.0
 
 
 SUMMARIZATION_PROMPT = """You are a helpful AI that creates concise journal summaries from conversation transcripts. 
@@ -134,6 +138,226 @@ async def call_ollama(
             return None, f"Ollama error: {type(e).__name__}: {e}"
     
     return None, "Max retries exceeded"
+
+
+#------This Function handles the Exponential Backoff for retries---------
+async def _exponential_backoff(attempt: int, base_delay: float = INITIAL_BACKOFF) -> None:
+    delay = min(base_delay * (2 ** attempt), MAX_BACKOFF)
+    jitter = delay * 0.1
+    await asyncio.sleep(delay + jitter)
+
+
+#------This Function streams Ollama response with real-time token-by-token output---------
+async def stream_ollama_response(
+    prompt: str,
+    content: str,
+    context: Optional[Dict[str, Any]] = None,
+    temperature: float = 0.3,
+    max_tokens: int = 2048,
+) -> AsyncGenerator[Dict[str, Any], None]:
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": content},
+    ]
+    
+    if context and context.get("conversation_history"):
+        for msg in context["conversation_history"][-10:]:
+            messages.insert(1, msg)
+    
+    tools = None
+    if context and context.get("enable_tools"):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get current weather for a location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string", "description": "City name"},
+                        },
+                        "required": ["location"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_time",
+                    "description": "Get current time for a timezone",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "timezone": {"type": "string", "description": " timezone (e.g., UTC, America/New_York)"},
+                        },
+                        "required": ["timezone"],
+                    },
+                },
+            },
+        ]
+    
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
+                async with client.stream(
+                    "POST",
+                    f"{settings.ollama_url}/api/chat",
+                    json={
+                        "model": settings.ollama_model,
+                        "messages": messages,
+                        "stream": True,
+                        "options": {
+                            "temperature": temperature,
+                            "num_predict": max_tokens,
+                        },
+                        "tools": tools,
+                    },
+                ) as resp:
+                    if resp.status_code != 200:
+                        error_msg = f"Ollama returned status {resp.status_code}"
+                        if resp.status_code == 404:
+                            error_msg = f"Model '{settings.ollama_model}' not found in Ollama"
+                        yield {"type": "error", "message": error_msg}
+                        return
+                    
+                    full_content = ""
+                    tool_calls = []
+                    
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        
+                        msg_type = data.get("done", False)
+                        
+                        if msg_type:
+                            yield {
+                                "type": "done",
+                                "content": full_content,
+                                "tool_calls": tool_calls if tool_calls else None,
+                            }
+                            return
+                        
+                        message = data.get("message", {})
+                        role = message.get("role", "")
+                        
+                        if role == "assistant":
+                            token = message.get("content", "")
+                            if token:
+                                full_content += token
+                                yield {"type": "token", "content": token}
+                            
+                            tc = message.get("tool_calls", [])
+                            if tc:
+                                for call in tc:
+                                    tool_calls.append(call)
+                                    yield {
+                                        "type": "tool_call",
+                                        "function": call.get("function", {}).get("name", ""),
+                                        "arguments": call.get("function", {}).get("arguments", {}),
+                                    }
+
+        except httpx.ConnectError as e:
+            error_msg = f"Cannot connect to Ollama at {settings.ollama_url}"
+            logger.warning(f"[CONV-STREAM] {error_msg}, attempt {attempt + 1}/{MAX_RETRIES + 1}")
+            if attempt < MAX_RETRIES:
+                await _exponential_backoff(attempt)
+                continue
+            yield {"type": "error", "message": error_msg}
+            return
+            
+        except httpx.TimeoutException as e:
+            error_msg = f"Ollama streaming request timed out after {STREAM_TIMEOUT}s"
+            logger.warning(f"[CONV-STREAM] {error_msg}, attempt {attempt + 1}/{MAX_RETRIES + 1}")
+            if attempt < MAX_RETRIES:
+                await _exponential_backoff(attempt)
+                continue
+            yield {"type": "error", "message": error_msg}
+            return
+            
+        except Exception as e:
+            error_msg = f"Ollama streaming error: {type(e).__name__}: {e}"
+            logger.error(f"[CONV-STREAM] {error_msg}")
+            yield {"type": "error", "message": error_msg}
+            return
+    
+    yield {"type": "error", "message": "Max retries exceeded"}
+
+
+#------This Function handles the Streaming Chat with context---------
+async def streaming_chat(
+    user_message: str,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    enable_tools: bool = False,
+    on_token: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    system_prompt = """You are AURA, a helpful AI assistant designed to help patients with daily tasks and reminders.
+Be concise, friendly, and empathetic. Always prioritize patient safety and wellbeing.
+If you don't know something, admit it honestly rather than making up information."""
+    
+    context = {
+        "conversation_history": conversation_history or [],
+        "enable_tools": enable_tools,
+    }
+    
+    full_response = ""
+    tool_calls = []
+    
+    try:
+        async for chunk in stream_ollama_response(
+            prompt=system_prompt,
+            content=user_message,
+            context=context,
+            temperature=0.7,
+            max_tokens=1024,
+        ):
+            chunk_type = chunk.get("type")
+            
+            if chunk_type == "token":
+                token = chunk.get("content", "")
+                full_response += token
+                if on_token:
+                    on_token(token)
+                    
+            elif chunk_type == "tool_call":
+                tool_calls.append({
+                    "function": chunk.get("function", ""),
+                    "arguments": chunk.get("arguments", {}),
+                })
+                
+            elif chunk_type == "done":
+                return {
+                    "success": True,
+                    "content": full_response,
+                    "tool_calls": tool_calls if tool_calls else None,
+                    "finish_reason": "stop",
+                }
+                
+            elif chunk_type == "error":
+                return {
+                    "success": False,
+                    "error": chunk.get("message", "Unknown error"),
+                    "content": full_response,
+                }
+    
+    except Exception as e:
+        logger.error(f"[CONV] Streaming chat error: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "content": full_response,
+        }
+    
+    return {
+        "success": True,
+        "content": full_response,
+        "tool_calls": tool_calls if tool_calls else None,
+    }
 
 
 async def analyze_conversation(
