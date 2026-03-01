@@ -79,3 +79,4 @@ Thumbs.db
 **/*.local
 **/dist/
 **/build/
+*.keystore

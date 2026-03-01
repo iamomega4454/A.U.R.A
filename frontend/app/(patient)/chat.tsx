@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
     View, Text, TextInput, StyleSheet, TouchableOpacity, FlatList, KeyboardAvoidingView,
-    Animated, ActivityIndicator, Alert,
+    Animated, ActivityIndicator, Alert, Linking,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAudioRecorder, RecordingPresets, requestRecordingPermissionsAsync } from 'expo-audio';
@@ -485,16 +485,31 @@ export default function ChatScreen() {
             if (!isMountedRef.current) {
                 return;
             }
-            const assistantMsg: Msg = { id: (Date.now() + 1).toString(), role: 'assistant', text: reply };
+
+            // Handle CALL_ACTION prefix from call_relative tool
+            let displayReply = reply;
+            if (reply.startsWith('CALL_ACTION:')) {
+                const parts = reply.replace('CALL_ACTION:', '').split('|');
+                const phone = parts[0]?.trim();
+                const message = parts[1]?.trim() || `Calling ${phone}`;
+                displayReply = message;
+                if (phone) {
+                    Linking.openURL(`tel:${phone}`).catch(() => {
+                        Alert.alert('Call Failed', `Could not initiate call to ${phone}`);
+                    });
+                }
+            }
+
+            const assistantMsg: Msg = { id: (Date.now() + 1).toString(), role: 'assistant', text: displayReply };
             setMessages((prev) => [...prev, assistantMsg]);
 
             if (fromOverlay) {
-                setOverlayResponse(reply);
+                setOverlayResponse(displayReply);
                 setOverlayState('speaking');
             }
 
             try {
-                const conversationContent = `User: ${text}\n\nOrito: ${reply}`;
+                const conversationContent = `User: ${text}\n\nOrito: ${displayReply}`;
                 await api.post('/journal/', {
                     content: conversationContent,
                     source: 'ai_generated',
@@ -504,7 +519,7 @@ export default function ChatScreen() {
                 console.error('[Chat] Failed to save to journal:', error);
             }
 
-            await speakWithEmotion(reply);
+            await speakWithEmotion(displayReply);
             if (fromOverlay && isMountedRef.current) {
                 setOverlayState('idle');
             }

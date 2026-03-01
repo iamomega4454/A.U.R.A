@@ -1156,7 +1156,7 @@ async def _get_current_location(uid: str) -> str:
 async def _get_suggestions(uid: str) -> str:
     try:
         suggestions = await Suggestion.find(
-            Suggestion.patient_uid == uid
+            Suggestion.user_uid == uid
         ).sort("-created_at").limit(5).to_list()
         if not suggestions:
             return "No suggestions available right now."
