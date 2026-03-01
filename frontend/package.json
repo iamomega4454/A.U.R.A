@@ -24,6 +24,7 @@
     "expo-crypto": "^15.0.8",
     "expo-file-system": "55.0.5",
     "expo-font": "55.0.3",
+    "expo-gl": "^55.0.9",
     "expo-haptics": "55.0.5",
     "expo-image-picker": "55.0.5",
     "expo-keep-awake": "~55.0.2",
@@ -39,6 +40,7 @@
     "expo-status-bar": "55.0.2",
     "expo-system-ui": "55.0.5",
     "expo-task-manager": "55.0.5",
+    "expo-three": "^8.0.0",
     "expo-web-browser": "^15.0.10",
     "react": "19.2.4",
     "react-dom": "19.2.4",
@@ -49,7 +51,8 @@
     "react-native-safe-area-context": "5.6.2",
     "react-native-screens": "4.23.0",
     "react-native-webview": "^13.16.0",
-    "react-native-worklets": "^0.7.3"
+    "react-native-worklets": "^0.7.3",
+    "three": "^0.183.2"
   },
   "devDependencies": {
     "@types/http-cache-semantics": "^4.2.0",
@@ -59,6 +62,7 @@
     "@types/normalize-package-data": "^2.4.4",
     "@types/react": "~19.2.14",
     "@types/semver": "^7.7.1",
+    "@types/three": "^0.183.1",
     "typescript": "~5.9.3"
   },
   "overrides": {

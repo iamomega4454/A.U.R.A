@@ -238,5 +238,86 @@ def test_health_check(client):
 - Group related tests in classes
 - One assertion per test when possible
 
+## Skills
+
+The following agent skills are installed in `.agents/skills/` and must be applied for the relevant use cases below.
+
+### `vercel-react-native-skills`
+**Always use** for any React Native / Expo work in the `frontend/` module. This includes:
+- Building or modifying React Native components
+- Optimizing list and scroll performance (FlashList, memoization)
+- Implementing animations with Reanimated
+- Working with images, media, and native modules
+- Navigation (use native stack/tab navigators)
+- Structuring the Expo monorepo
+
+Reference rules in `.agents/skills/vercel-react-native-skills/rules/` and the compiled guide in `AGENTS.md` inside that skill.
+
+### `better-auth-best-practices`
+**Use** for all authentication and authorization work in the backend (`backend/`):
+- Implementing or reviewing auth flows, sessions, tokens, OAuth
+- Setting up Better Auth library integrations
+- Security hardening of auth-related endpoints
+
+### `fastapi-templates`
+**Use** for all FastAPI backend development (`backend/`):
+- Creating new API routes, routers, and endpoints
+- Structuring request/response models and middleware
+- FastAPI project patterns and best practices
+
+### `python-testing-patterns`
+**Use** for all Python test writing across `backend/` and `auramodule/`:
+- Writing pytest tests, fixtures, and async test cases
+- Mocking, patching, and test coverage strategies
+- Integration and unit testing patterns for FastAPI
+
+### `iot-engineer`
+**Use** for all Raspberry Pi / IoT work in `auramodule/`:
+- Hardware GPIO, sensor integration, and device communication
+- Edge device deployment and resource-constrained programming
+- IoT protocols (MQTT, I2C, SPI) and reliability patterns
+
+### `fhir-developer-skill`
+**Use** for healthcare data standards and compliance throughout the project:
+- FHIR resource modeling for patient and medication data
+- Healthcare interoperability and data exchange
+- HIPAA-relevant data handling and privacy patterns
+
+### `api-security-best-practices`
+**Use** when writing or reviewing any backend API code in `backend/`:
+- Input validation, rate limiting, and injection prevention
+- Authentication middleware, CORS, and token security
+- OWASP Top 10 compliance for the FastAPI server
+
+### `machine-learning-engineer`
+**Use** whenever the task involves ML in the `auramodule/` or any part of the project:
+- Deploying ML models to production or to the Raspberry Pi edge device
+- Building real-time inference APIs
+- Model optimization and compression (quantization, pruning, ONNX)
+- Batch prediction systems and ML serving infrastructure
+- Auto-scaling, monitoring, and MLOps
+
+### `find-skills`
+**Use** when the team needs a new capability not covered by existing skills:
+- Run `npx skills find <query>` to discover skills from skills.sh
+- Always check the security risk rating before installing (reject High/Critical Risk)
+- Only install from trusted publishers (vercel-labs, anthropics, wshobson, 404kidwiz, better-auth)
+
+### `web-design-guidelines`
+**Use** when reviewing any web UI code for compliance and best practices:
+- Auditing web interface code for accessibility and UX
+- Reviewing HTML/CSS/JS against Web Interface Guidelines
+- Triggered by: "review my UI", "check accessibility", "audit design", "check my site"
+
+Fetches live guidelines from `https://raw.githubusercontent.com/vercel-labs/web-interface-guidelines/main/command.md` before each review.
+
+### `frontend-design`
+**Use** when creating or redesigning frontend interfaces (web or mobile UI):
+- Building new web components, pages, dashboards, or landing pages
+- Beautifying or restyling any UI
+- Creating production-grade, visually distinctive interfaces
+
+Avoid generic AI aesthetics — commit to a bold, intentional design direction. Never use overused fonts (Inter, Roboto, Arial) or clichéd purple gradients.
+
 ## Last Updated
 February 2026

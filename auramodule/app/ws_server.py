@@ -13,6 +13,7 @@ from app.services.speech import transcribe_audio
 from app.services.conversation import analyze_conversation, streaming_chat
 from app.services.microphone import mic_service
 from app.services.discovery import _get_local_ip
+from app.services.backend_client import get_backend_client
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -484,51 +485,51 @@ async def _ws_handler(request):
                         _conversation_history[patient_uid] = []
                     
                     history = _conversation_history.get(patient_uid, [])
-                    
-                    if settings.ollama_streaming:
-                        full_response = ""
-                        
-                        async def _send_token(token: str):
-                            try:
-                                await ws.send_json({
-                                    "type": "streaming_token",
-                                    "content": token,
-                                })
-                            except Exception:
-                                pass
-                        
-                        def on_token(token: str):
-                            nonlocal full_response
-                            full_response += token
-                            asyncio.create_task(_send_token(token))
-                        
+                    full_response = ""
+
+                    async def _send_token(token: str):
+                        try:
+                            await ws.send_json({
+                                "type": "streaming_token",
+                                "content": token,
+                            })
+                        except Exception:
+                            pass
+
+                    def on_token(token: str):
+                        nonlocal full_response
+                        full_response += token
+                        asyncio.create_task(_send_token(token))
+
+                    try:
+                        backend_client = get_backend_client()
+                        result = await backend_client.chat_with_orito(
+                            user_message=message,
+                            conversation_history=history,
+                            on_token=on_token,
+                            stream=True,
+                        )
+                    except RuntimeError:
                         result = await streaming_chat(
                             user_message=message,
                             conversation_history=history,
                             enable_tools=enable_tools,
                             on_token=on_token,
                         )
-                        
-                        if result.get("success"):
-                            history.append({"role": "user", "content": message})
-                            history.append({"role": "assistant", "content": result.get("content", "")})
-                            _conversation_history[patient_uid] = history[-20:]
-                            
-                            await ws.send_json({
-                                "type": "streaming_chat_done",
-                                "content": result.get("content", ""),
-                                "tool_calls": result.get("tool_calls"),
-                            })
-                        else:
-                            await ws.send_json({
-                                "type": "streaming_chat_error",
-                                "error": result.get("error", "Unknown error"),
-                            })
+
+                    if result.get("success"):
+                        history.append({"role": "user", "content": message})
+                        history.append({"role": "assistant", "content": result.get("content", "")})
+                        _conversation_history[patient_uid] = history[-20:]
+
+                        await ws.send_json({
+                            "type": "streaming_chat_done",
+                            "content": result.get("content", ""),
+                        })
                     else:
                         await ws.send_json({
-                            "type": "streaming_chat",
-                            "error": "streaming_disabled",
-                            "message": "Enable ollama_streaming in config",
+                            "type": "streaming_chat_error",
+                            "error": result.get("error", "Unknown error"),
                         })
 
                 elif cmd == "get_conversation_history":

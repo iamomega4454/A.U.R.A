@@ -43,7 +43,7 @@ function getGoogleWebClientId(): string {
     } catch {
         _googleWebClientId = '';
     }
-    return _googleWebClientId;
+    return _googleWebClientId as string;
 }
 
 

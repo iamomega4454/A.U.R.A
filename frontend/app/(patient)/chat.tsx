@@ -29,6 +29,7 @@ import {
 } from '../../src/services/voiceAssistant';
 import nativeSpeechService from '../../src/services/nativeSpeech';
 import OritoOverlay from '../../src/components/OritoOverlay';
+import OritoAvatar from '../../src/components/OritoAvatar';
 import Header from '../../src/components/Header';
 import { colors, fonts, spacing, radius } from '../../src/theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -71,16 +72,17 @@ function getEmotionTTSParams(text: string): { pitch: number; rate: number } {
 async function speakWithEmotion(text: string) {
     const emotionParams = getEmotionTTSParams(text);
 
-
     try {
-        const settingsRaw = await AsyncStorage.getItem('voice_settings');
+        // Settings are stored in backend, but user may have voice_feedback cached locally
+        const settingsRaw = await AsyncStorage.getItem('user_settings_voice');
         if (settingsRaw) {
-            const settings = JSON.parse(settingsRaw);
-            if (settings.voice_speed != null) emotionParams.rate = settings.voice_speed;
-            if (settings.voice_pitch != null) emotionParams.pitch = settings.voice_pitch;
+            const s = JSON.parse(settingsRaw);
+            if (s.voice_feedback === false) return;
+            if (s.voice_speed != null) emotionParams.rate = s.voice_speed;
+            if (s.voice_pitch != null) emotionParams.pitch = s.voice_pitch;
         }
     } catch {
-
+        // ignore - speak with defaults
     }
 
 
@@ -600,14 +602,14 @@ export default function ChatScreen() {
     //------This Function handles the Empty Component---------
     const EmptyComponent = useCallback(() => (
         <Animated.View style={[s.emptyWrap, { opacity: fadeAnim }]}>
-            <View style={s.emptyIconWrap}>
-                <Ionicons name="sparkles-outline" size={26} color={colors.textPrimary} />
+            <View style={s.emptyAvatarWrap}>
+                <OritoAvatar state={loading ? 'thinking' : 'idle'} size={140} />
             </View>
             <Text style={s.emptyTitle}>Hey, I'm Orito</Text>
             {userName && <Text style={s.emptyGreeting}>Nice to see you, {userName}!</Text>}
             <Text style={s.emptySub}>Say "Hello Orito" or tap the mic to start.</Text>
         </Animated.View>
-    ), [fadeAnim, userName]);
+    ), [fadeAnim, userName, loading]);
 
     const hasMessages = messages.length > 0;
 
@@ -796,15 +798,12 @@ const s = StyleSheet.create({
     sendBtn: { width: 40, height: 40, borderRadius: radius.full, alignItems: 'center', justifyContent: 'center' },
     listeningBtn: { transform: [{ scale: 1.1 }] },
     emptyWrap: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xl, paddingBottom: spacing.xl },
-    emptyIconWrap: {
-        width: 56,
-        height: 56,
-        borderRadius: 28,
-        borderWidth: 1,
-        borderColor: colors.borderLight,
-        backgroundColor: colors.surface,
-        alignItems: 'center',
-        justifyContent: 'center',
+    emptyAvatarWrap: {
+        width: 140,
+        height: 140,
+        borderRadius: 70,
+        overflow: 'hidden',
+        backgroundColor: '#0d0d1a',
     },
     emptyTitle: { color: colors.textPrimary, fontSize: fonts.sizes.xl, fontWeight: '600', marginTop: spacing.md },
     emptyGreeting: { color: colors.textSecondary, fontSize: fonts.sizes.md, fontWeight: '600', marginTop: spacing.xs },

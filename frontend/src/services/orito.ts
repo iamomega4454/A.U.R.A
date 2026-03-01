@@ -2434,7 +2434,7 @@ export async function transcribeAudio(uri: string): Promise<string> {
     }
 
     const formData = new FormData();
-    formData.append('file', {
+    formData.append('audio', {
         uri,
         name: 'audio.m4a',
         type: 'audio/m4a',

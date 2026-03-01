@@ -5,6 +5,12 @@ agent/
 _agent/
 .gemini/
 
+# Copilot skills
+skills/
+skills-lock.json
+.agents/
+.kilocode/
+
 # Node.js
 **/node_modules/
 npm-debug.log*

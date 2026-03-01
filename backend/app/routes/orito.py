@@ -609,13 +609,16 @@ async def transcribe_audio(
         raise HTTPException(status_code=503, detail="AI service is not configured")
 
     if not audio.filename:
-        raise HTTPException(status_code=400, detail="No audio file provided")
+        audio.filename = "audio.m4a"
 
     try:
         audio_content = await audio.read()
         
+        filename = audio.filename or "audio.m4a"
+        content_type = audio.content_type or "audio/m4a"
+        
         files = {
-            "file": (audio.filename, audio_content, audio.content_type or "audio/m4a")
+            "file": (filename, audio_content, content_type)
         }
         
         data = {

@@ -15,6 +15,7 @@ import * as Haptics from 'expo-haptics';
 import { colors, fonts, spacing, radius } from '../theme';
 import { WakeWordState, isUsingNativeSpeech } from '../services/voiceAssistant';
 import nativeSpeechService from '../services/nativeSpeech';
+import OritoAvatar, { AvatarState } from './OritoAvatar';
 
 const { width, height } = Dimensions.get('window');
 
@@ -176,6 +177,15 @@ export function OritoOverlay({
         }
     };
 
+    const getAvatarState = (): AvatarState => {
+        switch (state) {
+            case 'listening': return 'listening';
+            case 'processing': return 'thinking';
+            case 'speaking': return 'speaking';
+            default: return 'idle';
+        }
+    };
+
     const getStateText = () => {
         switch (state) {
             case 'listening':
@@ -277,57 +287,20 @@ export function OritoOverlay({
                     <View style={styles.content}>
                         <Animated.View
                             style={[
-                                styles.iconContainer,
+                                styles.avatarContainer,
                                 {
                                     transform: [{ scale: state === 'listening' ? pulseAnim : 1 }],
-                                    backgroundColor: '#F3F4F6',
                                     ...(state === 'speaking' ? {
-                                        shadowColor: '#000000',
+                                        shadowColor: '#00ffff',
                                         shadowOffset: { width: 0, height: 0 },
                                         shadowOpacity: glowAnim,
-                                        shadowRadius: 20,
-                                        elevation: 10,
+                                        shadowRadius: 24,
+                                        elevation: 12,
                                     } : {}),
                                 },
                             ]}
                         >
-                            {state === 'processing' ? (
-                                <View style={styles.processingContainer}>
-                                    <Animated.View style={[
-                                        styles.processingDot,
-                                        { 
-                                            opacity: waveAnim,
-                                            backgroundColor: '#4B5563',
-                                        }
-                                    ]} />
-                                    <Animated.View style={[
-                                        styles.processingDot,
-                                        { 
-                                            opacity: waveAnim.interpolate({
-                                                inputRange: [0, 1],
-                                                outputRange: [0.5, 1],
-                                            }),
-                                            backgroundColor: '#4B5563',
-                                        }
-                                    ]} />
-                                    <Animated.View style={[
-                                        styles.processingDot,
-                                        { 
-                                            opacity: waveAnim.interpolate({
-                                                inputRange: [0, 1],
-                                                outputRange: [1, 0.5],
-                                            }),
-                                            backgroundColor: '#4B5563',
-                                        }
-                                    ]} />
-                                </View>
-                            ) : (
-                                <Ionicons
-                                    name={getStateIcon()}
-                                    size={48}
-                                    color={getStateColor(!!error)}
-                                />
-                            )}
+                            <OritoAvatar state={getAvatarState()} size={160} />
                         </Animated.View>
 
                         <Text style={[styles.stateText, { color: getStateColor(!!error) }]}>
@@ -469,22 +442,15 @@ const styles = StyleSheet.create({
         paddingTop: spacing.xxl,
         alignItems: 'center',
     },
-    iconContainer: {
-        width: 100,
-        height: 100,
-        borderRadius: 50,
+    avatarContainer: {
+        width: 160,
+        height: 160,
+        borderRadius: 80,
         justifyContent: 'center',
         alignItems: 'center',
         marginBottom: spacing.lg,
-    },
-    processingContainer: {
-        flexDirection: 'row',
-        gap: 8,
-    },
-    processingDot: {
-        width: 12,
-        height: 12,
-        borderRadius: 6,
+        overflow: 'hidden',
+        backgroundColor: '#0d0d1a',
     },
     stateText: {
         fontSize: 22,

@@ -10,6 +10,7 @@ import {
     Image,
     ActivityIndicator,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fonts, spacing, radius } from '../../src/theme';
@@ -328,6 +329,9 @@ export default function SettingsScreen() {
                 voice: { ...DEFAULT_SETTINGS_DATA.voice, ...data.voice },
                 accessibility: { ...DEFAULT_SETTINGS_DATA.accessibility, ...data.accessibility },
             });
+            // Cache voice settings for TTS use in chat screen
+            const voiceData = { ...DEFAULT_SETTINGS_DATA.voice, ...data.voice };
+            AsyncStorage.setItem('user_settings_voice', JSON.stringify(voiceData)).catch(() => {});
         } catch (error) {
             console.warn('[Settings] Failed to load settings, using defaults', error);
             setSettings(DEFAULT_SETTINGS_DATA);
@@ -342,10 +346,13 @@ export default function SettingsScreen() {
         options?: { showError?: boolean }
     ) {
         const previous = settings[category];
-        setSettings((prev) => ({
-            ...prev,
-            [category]: { ...prev[category], ...updates },
-        }));
+        setSettings((prev) => {
+            const updated = { ...prev, [category]: { ...prev[category], ...updates } };
+            if (category === 'voice') {
+                AsyncStorage.setItem('user_settings_voice', JSON.stringify(updated.voice)).catch(() => {});
+            }
+            return updated;
+        });
 
         try {
             await api.patch(`/settings/${category}`, updates);

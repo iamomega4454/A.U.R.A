@@ -4,7 +4,7 @@ import logging
 import httpx
 import platform
 import time
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, Dict, List
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -297,6 +297,92 @@ class BackendClient:
             "heartbeat_failures": self._heartbeat_failures,
             "is_reconnecting": self._is_reconnecting,
         }
+
+    #------This Function chats with Orito via the backend NVIDIA AI endpoint---------
+    async def chat_with_orito(
+        self,
+        user_message: str,
+        conversation_history: Optional[List[Dict]] = None,
+        on_token: Optional[Callable[[str], None]] = None,
+        stream: bool = True,
+    ) -> Dict:
+        """Send a message to the backend Orito AI and return the response.
+        If on_token is provided and stream=True, tokens are streamed via callback."""
+        import json as _json
+
+        token = (settings.backend_auth_token or "").strip()
+        if not token:
+            logger.warning("[ORITO] No auth token configured, cannot call backend AI")
+            return {"success": False, "error": "No auth token configured", "content": ""}
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload: Dict = {"user_message": user_message}
+        if conversation_history:
+            payload["messages"] = conversation_history
+
+        full_response = ""
+
+        try:
+            client = await self._get_client()
+
+            if stream and on_token is not None:
+                headers["Accept"] = "text/event-stream"
+                async with client.stream(
+                    "POST",
+                    f"{settings.backend_url}/orito/chat/stream",
+                    json=payload,
+                    headers=headers,
+                    timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=5.0),
+                ) as resp:
+                    if resp.status_code != 200:
+                        error_text = await resp.aread()
+                        logger.warning(f"[ORITO] Stream failed: {resp.status_code} {error_text[:200]}")
+                        return {"success": False, "error": f"HTTP {resp.status_code}", "content": ""}
+
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        raw = line[6:].strip()
+                        if not raw:
+                            continue
+                        try:
+                            chunk = _json.loads(raw)
+                        except _json.JSONDecodeError:
+                            continue
+
+                        if "token" in chunk:
+                            token_text = chunk["token"]
+                            full_response += token_text
+                            on_token(token_text)
+                        elif chunk.get("done"):
+                            break
+            else:
+                resp = await client.post(
+                    f"{settings.backend_url}/orito/chat",
+                    json=payload,
+                    headers=headers,
+                    timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0),
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"[ORITO] Chat failed: {resp.status_code}")
+                    return {"success": False, "error": f"HTTP {resp.status_code}", "content": ""}
+                data = resp.json()
+                full_response = data.get("message", {}).get("content", "")
+
+            return {"success": True, "content": full_response}
+
+        except httpx.ConnectError:
+            logger.warning(f"[ORITO] Cannot connect to backend at {settings.backend_url}")
+            return {"success": False, "error": "Cannot connect to backend", "content": ""}
+        except httpx.TimeoutException:
+            logger.warning("[ORITO] Chat request timed out")
+            return {"success": False, "error": "Request timed out", "content": ""}
+        except Exception as e:
+            logger.error(f"[ORITO] Chat error: {type(e).__name__}: {e}")
+            return {"success": False, "error": str(e), "content": ""}
 
 
 
