@@ -90,7 +90,17 @@ def check_pyaudio():
         if sys.platform == "darwin":
             subprocess.run(["brew", "install", "portaudio"], check=True)
         elif sys.platform == "linux":
-            subprocess.run(["sudo", "apt-get", "install", "-y", "portaudio19-dev"], check=False)
+            if Path("/etc/arch-release").exists():
+                print("  {BLUE}›{RESET} Detected Arch Linux")
+                subprocess.run(["sudo", "pacman", "-S", "--noconfirm", "portaudio"], check=False)
+            elif Path("/etc/fedora-release").exists():
+                print("  {BLUE}›{RESET} Detected Fedora")
+                subprocess.run(["sudo", "dnf", "install", "-y", "portaudio-devel"], check=False)
+            elif Path("/etc/debian_version").exists() or Path("/etc/ubuntu_version").exists():
+                print("  {BLUE}›{RESET} Detected Debian/Ubuntu")
+                subprocess.run(["sudo", "apt-get", "install", "-y", "portaudio19-dev"], check=False)
+            else:
+                print("  {BLUE}›{RESET} Unknown distro, trying pip...")
         
         subprocess.run([sys.executable, "-m", "pip", "install", "pyaudio"], check=True)
         print_status("●", "PyAudio installed successfully")
@@ -302,6 +312,7 @@ def check_models() -> bool:
         import insightface
         from insightface.app import FaceAnalysis
         
+        print(f"  {CYAN}→{RESET} Initializing buffalo_l model (first run may download weights)...")
         app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
         app.prepare(ctx_id=0, det_size=(640, 640))
         print_status("●", "buffalo_l face recognition model ready")
@@ -309,7 +320,7 @@ def check_models() -> bool:
         
     except ImportError:
         print_status("●", "InsightFace not installed", YELLOW)
-        print(f"  {CYAN}→{RESET} Installing InsightFace...")
+        print(f"  {CYAN}→{RESET} Installing InsightFace and dependencies...")
         
         try:
             subprocess.run(
@@ -319,6 +330,7 @@ def check_models() -> bool:
             )
             print_status("●", "InsightFace installed successfully")
             
+            print(f"  {CYAN}→{RESET} Initializing buffalo_l model...")
             from insightface.app import FaceAnalysis
             app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
             app.prepare(ctx_id=0, det_size=(640, 640))
@@ -332,7 +344,7 @@ def check_models() -> bool:
         
     except Exception as e:
         print_status("●", f"Model not ready: {e}", YELLOW)
-        print(f"  {CYAN}→{RESET} Attempting to install and setup...")
+        print(f"  {CYAN}→{RESET} Attempting to reinstall and setup...")
         
         try:
             subprocess.run(
@@ -340,6 +352,7 @@ def check_models() -> bool:
                 check=True,
                 timeout=180,
             )
+            print(f"  {CYAN}→{RESET} Reinitializing buffalo_l model...")
             from insightface.app import FaceAnalysis
             app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
             app.prepare(ctx_id=0, det_size=(640, 640))
