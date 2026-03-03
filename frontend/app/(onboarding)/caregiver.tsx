@@ -1,38 +1,37 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, TextInput, ActivityIndicator, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import api from '../../src/services/api';
 import Screen from '../../src/components/Screen';
 import { colors, fonts, spacing, radius } from '../../src/theme';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const SEVERITY_OPTIONS = ['Mild', 'Moderate', 'High Support'];
+const SEVERITY_OPTIONS = [
+  { key: 'Mild', label: 'Mild', desc: 'Mostly independent', icon: 'sunny-outline' },
+  { key: 'Moderate', label: 'Moderate', desc: 'Some daily support', icon: 'partly-sunny-outline' },
+  { key: 'High Support', label: 'High Support', desc: 'Continuous care', icon: 'cloudy-outline' },
+];
 
 //------This Function handles the Caregiver Onboarding Intake Screen---------
 export default function CaregiverOnboardingIntakeScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [patientUid, setPatientUid] = useState<string>('');
-  const [linkedPatients, setLinkedPatients] = useState<string[]>([]);
+  const [linkedPatients, setLinkedPatients] = useState<{ uid: string; name?: string }[]>([]);
 
   const [condition, setCondition] = useState('');
   const [severity, setSeverity] = useState('Moderate');
   const [diagnosisDate, setDiagnosisDate] = useState('');
   const [notes, setNotes] = useState('');
 
-  const [medName, setMedName] = useState('');
-  const [medDosage, setMedDosage] = useState('');
-  const [medFrequency, setMedFrequency] = useState('');
-  const [medTimes, setMedTimes] = useState('');
-
   useEffect(() => {
     loadLinkedPatients();
   }, []);
 
-  const canSubmit = useMemo(() => {
-    return Boolean(patientUid && condition.trim() && severity.trim() && notes.trim());
-  }, [patientUid, condition, severity, notes]);
+  const canContinue = useMemo(() => {
+    return Boolean(patientUid && condition.trim() && severity.trim());
+  }, [patientUid, condition, severity]);
 
   //------This Function handles the Load Linked Patients---------
   async function loadLinkedPatients() {
@@ -40,7 +39,8 @@ export default function CaregiverOnboardingIntakeScreen() {
       const res = await api.get('/auth/me');
       const me = res.data;
       const linked = Array.isArray(me.linked_patients) ? me.linked_patients : [];
-      setLinkedPatients(linked);
+      const patients = linked.map((uid: string) => ({ uid, name: undefined }));
+      setLinkedPatients(patients);
       setPatientUid(linked[0] || '');
     } catch {
       setLinkedPatients([]);
@@ -50,55 +50,20 @@ export default function CaregiverOnboardingIntakeScreen() {
     }
   }
 
-  //------This Function handles the Parse Times---------
-  function parseTimes(input: string): string[] {
-    return input
-      .split(',')
-      .map(v => v.trim())
-      .filter(Boolean)
-      .map(v => {
-        const parts = v.split(':');
-        if (parts.length !== 2) return v;
-        const h = parts[0].padStart(2, '0');
-        const m = parts[1].padStart(2, '0');
-        return `${h}:${m}`;
-      });
-  }
-
-  //------This Function handles the Submit Intake---------
-  async function submitIntake() {
-    if (!canSubmit) {
-      Alert.alert('Required', 'Please complete all required medical fields before continuing.');
+  //------This Function handles the Continue To Medications---------
+  async function handleContinue() {
+    if (!canContinue) {
+      Alert.alert('Required', 'Please select a patient and enter their condition.');
       return;
     }
-
-    const meds = medName.trim()
-      ? [{
-          name: medName.trim(),
-          dosage: medDosage.trim(),
-          frequency: medFrequency.trim(),
-          schedule_times: parseTimes(medTimes),
-          notes: '',
-        }]
-      : [];
-
-    setSaving(true);
-    try {
-      await api.put('/onboarding/caregiver-intake', {
-        patient_uid: patientUid,
-        condition: condition.trim(),
-        severity,
-        diagnosis_date: diagnosisDate.trim() || null,
-        notes: notes.trim(),
-        medications: meds,
-      });
-      router.replace('/(caregiver)/dashboard');
-    } catch (error: any) {
-      const msg = error?.response?.data?.detail || 'Could not save caregiver intake';
-      Alert.alert('Error', msg);
-    } finally {
-      setSaving(false);
-    }
+    await AsyncStorage.setItem('caregiver_intake_draft', JSON.stringify({
+      patient_uid: patientUid,
+      condition: condition.trim(),
+      severity,
+      diagnosis_date: diagnosisDate.trim() || null,
+      notes: notes.trim(),
+    }));
+    router.push('/(onboarding)/caregiver-meds');
   }
 
   if (loading) {
@@ -115,9 +80,11 @@ export default function CaregiverOnboardingIntakeScreen() {
     return (
       <Screen>
         <View style={s.emptyWrap}>
-          <Ionicons name="warning-outline" size={44} color={colors.red} />
-          <Text style={s.emptyTitle}>No linked patient found</Text>
-          <Text style={s.emptySub}>Link a patient first to complete caregiver onboarding.</Text>
+          <View style={s.emptyIconWrap}>
+            <Ionicons name="warning-outline" size={36} color={colors.red} />
+          </View>
+          <Text style={s.emptyTitle}>No patient linked yet</Text>
+          <Text style={s.emptySub}>Link a patient to your account first, then come back to complete your setup.</Text>
         </View>
       </Screen>
     );
@@ -126,55 +93,83 @@ export default function CaregiverOnboardingIntakeScreen() {
   return (
     <Screen>
       <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
+
+        <View style={s.progressWrap}>
+          <View style={s.progressBar}>
+            <View style={[s.progressFill, { width: '50%' }]} />
+          </View>
+          <Text style={s.progressLabel}>1 of 2</Text>
+        </View>
+
         <View style={s.headerBlock}>
-          <Text style={s.step}>Required before dashboard</Text>
-          <Text style={s.title}>Caregiver Intake</Text>
-          <Text style={s.subtitle}>Complete these sections once to unlock caregiver tools.</Text>
+          <View style={s.badge}>
+            <Ionicons name="medical-outline" size={14} color={colors.textMuted} />
+            <Text style={s.badgeText}>Caregiver Setup</Text>
+          </View>
+          <Text style={s.title}>Patient Information</Text>
+          <Text style={s.subtitle}>This helps Orito support your patient safely and effectively.</Text>
         </View>
 
         <View style={s.section}>
-          <Text style={s.sectionTitle}>Patient</Text>
-          <Text style={s.label}>SELECT PATIENT</Text>
-          <View style={s.patientRow}>
-            {linkedPatients.map((uid) => (
-              <TouchableOpacity
-                key={uid}
-                style={[s.patientChip, patientUid === uid && s.patientChipActive]}
-                onPress={() => setPatientUid(uid)}
-                activeOpacity={0.8}
+          <View style={s.sectionHeader}>
+            <Ionicons name="person-outline" size={18} color={colors.textMuted} />
+            <Text style={s.sectionTitle}>Who are you caring for?</Text>
+          </View>
+          <View style={s.patientGrid}>
+            {linkedPatients.map((p) => (
+              <Pressable
+                key={p.uid}
+                style={({ pressed }) => [s.patientCard, patientUid === p.uid && s.patientCardActive, pressed && s.pressedDown]}
+                onPress={() => setPatientUid(p.uid)}
               >
-                <Text style={[s.patientChipText, patientUid === uid && s.patientChipTextActive]}>{uid.slice(0, 12)}...</Text>
-              </TouchableOpacity>
+                <View style={[s.patientAvatar, patientUid === p.uid && s.patientAvatarActive]}>
+                  <Ionicons name="person" size={20} color={patientUid === p.uid ? colors.bg : colors.textSecondary} />
+                </View>
+                <Text style={[s.patientUidText, patientUid === p.uid && s.patientUidTextActive]} numberOfLines={1}>
+                  {p.name ?? `Patient ${p.uid.slice(0, 8)}...`}
+                </Text>
+                {patientUid === p.uid && (
+                  <View style={s.selectedDot} />
+                )}
+              </Pressable>
             ))}
           </View>
         </View>
 
         <View style={s.section}>
-          <Text style={s.sectionTitle}>Critical Medical Information</Text>
-          <Text style={s.label}>CONDITION</Text>
+          <View style={s.sectionHeader}>
+            <Ionicons name="document-text-outline" size={18} color={colors.textMuted} />
+            <Text style={s.sectionTitle}>Medical background</Text>
+          </View>
+
+          <Text style={s.fieldLabel}>CONDITION</Text>
           <TextInput
             style={s.input}
             value={condition}
             onChangeText={setCondition}
-            placeholder="e.g. Alzheimer’s disease"
+            placeholder="e.g. Alzheimer's disease, Dementia, Parkinson's..."
             placeholderTextColor={colors.textMuted}
           />
 
-          <Text style={s.label}>SEVERITY</Text>
-          <View style={s.severityRow}>
-            {SEVERITY_OPTIONS.map((item) => (
-              <TouchableOpacity
-                key={item}
-                style={[s.severityChip, severity === item && s.severityChipActive]}
-                onPress={() => setSeverity(item)}
-                activeOpacity={0.8}
-              >
-                <Text style={[s.severityText, severity === item && s.severityTextActive]}>{item}</Text>
-              </TouchableOpacity>
-            ))}
+          <Text style={s.fieldLabel}>LEVEL OF SUPPORT NEEDED</Text>
+          <View style={s.severityGrid}>
+            {SEVERITY_OPTIONS.map((item) => {
+              const active = severity === item.key;
+              return (
+                <Pressable
+                  key={item.key}
+                  style={({ pressed }) => [s.severityCard, active && s.severityCardActive, pressed && s.pressedDown]}
+                  onPress={() => setSeverity(item.key)}
+                >
+                  <Ionicons name={item.icon as any} size={18} color={active ? colors.bg : colors.textSecondary} />
+                  <Text style={[s.severityLabel, active && s.severityLabelActive]}>{item.label}</Text>
+                  <Text style={[s.severityDesc, active && s.severityDescActive]}>{item.desc}</Text>
+                </Pressable>
+              );
+            })}
           </View>
 
-          <Text style={s.label}>DIAGNOSIS DATE (OPTIONAL)</Text>
+          <Text style={s.fieldLabel}>DIAGNOSIS DATE (OPTIONAL)</Text>
           <TextInput
             style={s.input}
             value={diagnosisDate}
@@ -182,66 +177,34 @@ export default function CaregiverOnboardingIntakeScreen() {
             placeholder="YYYY-MM-DD"
             placeholderTextColor={colors.textMuted}
           />
+        </View>
 
-          <Text style={s.label}>CRITICAL NOTES (REQUIRED)</Text>
+        <View style={s.section}>
+          <View style={s.sectionHeader}>
+            <Ionicons name="alert-circle-outline" size={18} color={colors.textMuted} />
+            <Text style={s.sectionTitle}>Critical care notes</Text>
+          </View>
+          <Text style={s.hint}>Allergies, triggers, emergency considerations — anything Orito must know</Text>
           <TextInput
             style={[s.input, s.notesInput]}
             value={notes}
             onChangeText={setNotes}
-            placeholder="Allergies, escalation instructions, emergency considerations"
+            placeholder="e.g. Allergic to penicillin, falls risk, call daughter first in emergencies..."
             placeholderTextColor={colors.textMuted}
             multiline
             textAlignVertical="top"
           />
         </View>
 
-        <View style={s.section}>
-          <Text style={s.sectionTitle}>Optional Medication Setup</Text>
-          <TextInput
-            style={s.input}
-            value={medName}
-            onChangeText={setMedName}
-            placeholder="Medication name"
-            placeholderTextColor={colors.textMuted}
-          />
-          <View style={s.row}>
-            <TextInput
-              style={[s.input, s.halfInput]}
-              value={medDosage}
-              onChangeText={setMedDosage}
-              placeholder="Dosage"
-              placeholderTextColor={colors.textMuted}
-            />
-            <TextInput
-              style={[s.input, s.halfInput]}
-              value={medFrequency}
-              onChangeText={setMedFrequency}
-              placeholder="Frequency"
-              placeholderTextColor={colors.textMuted}
-            />
-          </View>
-          <TextInput
-            style={s.input}
-            value={medTimes}
-            onChangeText={setMedTimes}
-            placeholder="Times in 24h, comma separated (08:00,20:00)"
-            placeholderTextColor={colors.textMuted}
-          />
-        </View>
-
-        <TouchableOpacity
-          style={[s.primaryBtn, (!canSubmit || saving) && s.primaryBtnDisabled]}
-          onPress={submitIntake}
-          activeOpacity={0.9}
-          disabled={!canSubmit || saving}
+        <Pressable
+          style={({ pressed }) => [s.primaryBtn, !canContinue && s.primaryBtnDisabled, pressed && canContinue && s.primaryBtnPressed]}
+          onPress={handleContinue}
+          disabled={!canContinue}
         >
-          {saving ? <ActivityIndicator color={colors.bg} /> : (
-            <>
-              <Ionicons name="arrow-forward" size={18} color={colors.bg} />
-              <Text style={s.primaryBtnText}>Save Intake and Continue</Text>
-            </>
-          )}
-        </TouchableOpacity>
+          <Text style={s.primaryBtnText}>Continue to Medications</Text>
+          <Ionicons name="arrow-forward" size={18} color={colors.bg} />
+        </Pressable>
+
       </ScrollView>
     </Screen>
   );
@@ -251,7 +214,7 @@ const s = StyleSheet.create({
   content: {
     flexGrow: 1,
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
+    paddingTop: spacing.md,
     paddingBottom: spacing.xxl,
     gap: spacing.md,
   },
@@ -260,20 +223,58 @@ const s = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  progressWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  progressBar: {
+    flex: 1,
+    height: 3,
+    backgroundColor: colors.bgTertiary,
+    borderRadius: radius.full,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: colors.white,
+    borderRadius: radius.full,
+  },
+  progressLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+  },
   headerBlock: {
     gap: spacing.xs,
     marginBottom: spacing.xs,
   },
-  step: {
-    color: colors.red,
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    alignSelf: 'flex-start',
+    paddingVertical: 4,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    marginBottom: spacing.xs,
+  },
+  badgeText: {
+    color: colors.textMuted,
     fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.8,
+    fontWeight: '600',
+    letterSpacing: 0.5,
   },
   title: {
     color: colors.textPrimary,
-    fontSize: 25,
+    fontSize: 26,
     fontWeight: '700',
+    lineHeight: 32,
   },
   subtitle: {
     color: colors.textSecondary,
@@ -288,18 +289,28 @@ const s = StyleSheet.create({
     padding: spacing.lg,
     gap: spacing.sm,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
+  },
   sectionTitle: {
     color: colors.textPrimary,
     fontSize: fonts.sizes.md,
     fontWeight: '700',
   },
-  label: {
+  fieldLabel: {
     color: colors.textSecondary,
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 1.2,
-    marginBottom: 6,
-    marginTop: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  hint: {
+    color: colors.textMuted,
+    fontSize: fonts.sizes.xs,
+    lineHeight: 16,
   },
   input: {
     backgroundColor: colors.bgTertiary,
@@ -307,82 +318,121 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     paddingHorizontal: spacing.md,
-    paddingVertical: 12,
+    paddingVertical: 13,
     color: colors.textPrimary,
     fontSize: fonts.sizes.md,
   },
   notesInput: {
     minHeight: 100,
+    paddingTop: 13,
+    textAlignVertical: 'top',
   },
-  patientRow: {
+  patientGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: spacing.sm,
   },
-  patientChip: {
-    backgroundColor: colors.bgTertiary,
+  patientCard: {
+    alignItems: 'center',
+    gap: spacing.xs,
+    padding: spacing.md,
+    borderRadius: radius.xl,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radius.full,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    backgroundColor: colors.bgTertiary,
+    minWidth: 100,
+    position: 'relative',
   },
-  patientChipActive: {
+  patientCardActive: {
+    borderColor: colors.white,
+  },
+  patientAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  patientAvatarActive: {
     backgroundColor: colors.white,
     borderColor: colors.white,
   },
-  patientChipText: {
+  patientUidText: {
     color: colors.textSecondary,
     fontSize: fonts.sizes.xs,
     fontWeight: '600',
+    maxWidth: 90,
+    textAlign: 'center',
   },
-  patientChipTextActive: {
-    color: colors.bg,
+  patientUidTextActive: {
+    color: colors.textPrimary,
   },
-  severityRow: {
+  selectedDot: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.white,
+  },
+  severityGrid: {
     flexDirection: 'row',
     gap: spacing.sm,
   },
-  severityChip: {
+  severityCard: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 10,
-    borderRadius: radius.full,
+    gap: 4,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xs,
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.bgTertiary,
   },
-  severityChipActive: {
+  severityCardActive: {
     borderColor: colors.white,
     backgroundColor: colors.white,
   },
-  severityText: {
-    color: colors.textSecondary,
-    fontSize: fonts.sizes.xs,
+  severityLabel: {
+    color: colors.textPrimary,
+    fontSize: 11,
     fontWeight: '700',
+    textAlign: 'center',
   },
-  severityTextActive: {
+  severityLabelActive: {
     color: colors.bg,
   },
-  row: {
-    flexDirection: 'row',
-    gap: spacing.sm,
+  severityDesc: {
+    color: colors.textMuted,
+    fontSize: 10,
+    textAlign: 'center',
   },
-  halfInput: {
-    flex: 1,
+  severityDescActive: {
+    color: colors.bgTertiary,
+  },
+  pressedDown: {
+    opacity: 0.75,
   },
   primaryBtn: {
-    marginTop: spacing.md,
-    height: 54,
+    marginTop: spacing.sm,
+    height: 56,
     borderRadius: radius.full,
     backgroundColor: colors.white,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    flexDirection: 'row',
-    gap: spacing.xs,
+    gap: spacing.sm,
   },
   primaryBtnDisabled: {
-    opacity: 0.5,
+    opacity: 0.45,
+  },
+  primaryBtnPressed: {
+    opacity: 0.85,
   },
   primaryBtnText: {
     color: colors.bg,
@@ -395,6 +445,16 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: spacing.xl,
     gap: spacing.md,
+  },
+  emptyIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: colors.redLight,
+    borderWidth: 1,
+    borderColor: colors.redGlow,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyTitle: {
     color: colors.textPrimary,

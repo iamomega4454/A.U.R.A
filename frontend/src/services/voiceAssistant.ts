@@ -43,6 +43,7 @@ export async function initializeVoiceAssistant(): Promise<boolean> {
         });
 
         nativeSpeechService.setRecognitionErrorCallback((error) => {
+            console.error('[VoiceAssistant] Recognition error:', error);
             if (currentState === 'listening' || currentState === 'processing') {
                 updateState('idle');
             }
@@ -83,6 +84,7 @@ function handleWakeWordDetected(): void {
 
 //------This Function handles the Handle Recognition Result---------
 function handleRecognitionResult(result: SpeechRecognitionResult): void {
+    console.log('[VoiceAssistant] Recognition result:', { text: result.text.substring(0, 80), isFinal: result.isFinal });
     if (onTranscription) {
         onTranscription(result.text, result.isFinal);
     }
@@ -163,8 +165,10 @@ export function stopWakeWordDetection(): void {
 
 //------This Function handles the Start Recognition---------
 export async function startRecognition(): Promise<boolean> {
+    console.log('[VoiceAssistant] startRecognition, useNativeSpeech:', useNativeSpeech);
     if (useNativeSpeech) {
         const started = await nativeSpeechService.startRecognition();
+        console.log('[VoiceAssistant] nativeSpeech.startRecognition result:', started);
         updateState(started ? 'listening' : 'idle');
         return started;
     }
@@ -176,7 +180,8 @@ export async function stopRecognition(): Promise<void> {
     if (useNativeSpeech) {
         await nativeSpeechService.stopRecognition();
     }
-    if (currentState !== 'speaking') {
+    // Don't override 'processing' or 'speaking' — those states are managed by handleSend/TTS
+    if (currentState === 'listening') {
         updateState('idle');
     }
 }

@@ -1,40 +1,43 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform, KeyboardAvoidingView } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, Platform, KeyboardAvoidingView, TextInput } from 'react-native';
 import { useRouter } from 'expo-router';
 import Screen from '../../src/components/Screen';
-import Input from '../../src/components/Input';
 import { colors, fonts, spacing, radius } from '../../src/theme';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const COMFORT_OPTIONS = [
-  { key: 'walks', label: 'Short walks', icon: 'walk' },
-  { key: 'music', label: 'Music', icon: 'musical-notes' },
-  { key: 'photos', label: 'Photo memories', icon: 'images' },
-  { key: 'tea', label: 'Tea time', icon: 'cafe' },
-  { key: 'prayer', label: 'Prayer', icon: 'heart' },
-  { key: 'chat', label: 'Talking with family', icon: 'people' },
-  { key: 'garden', label: 'Plants & nature', icon: 'leaf' },
-  { key: 'stories', label: 'Stories', icon: 'book' },
+const JOY_OPTIONS = [
+  { key: 'walks', label: 'Short walks', icon: 'walk-outline' },
+  { key: 'music', label: 'Music', icon: 'musical-notes-outline' },
+  { key: 'photos', label: 'Old photos', icon: 'images-outline' },
+  { key: 'tea', label: 'Tea & coffee', icon: 'cafe-outline' },
+  { key: 'prayer', label: 'Prayer & faith', icon: 'heart-outline' },
+  { key: 'chat', label: 'Family chats', icon: 'people-outline' },
+  { key: 'garden', label: 'Plants & garden', icon: 'leaf-outline' },
+  { key: 'stories', label: 'Reading & stories', icon: 'book-outline' },
+  { key: 'tv', label: 'Watching TV', icon: 'tv-outline' },
+  { key: 'cooking', label: 'Cooking', icon: 'restaurant-outline' },
 ];
 
 //------This Function handles the Patient Onboarding Welcome Screen---------
 export default function PatientOnboardingWelcomeScreen() {
   const router = useRouter();
-  const [selectedComforts, setSelectedComforts] = useState<string[]>([]);
+  const [selectedJoys, setSelectedJoys] = useState<string[]>([]);
   const [preferredName, setPreferredName] = useState('');
   const [importantPeople, setImportantPeople] = useState('');
+  const [healthNotes, setHealthNotes] = useState('');
 
-  //------This Function handles the Toggle Comfort---------
-  function toggleComfort(key: string) {
-    setSelectedComforts(prev => prev.includes(key) ? prev.filter(x => x !== key) : [...prev, key]);
+  //------This Function handles the Toggle Joy---------
+  function toggleJoy(key: string) {
+    setSelectedJoys(prev => prev.includes(key) ? prev.filter(x => x !== key) : [...prev, key]);
   }
 
   //------This Function handles the Handle Next---------
   async function handleNext() {
-    await AsyncStorage.setItem('onboarding_patient_comforts', JSON.stringify(selectedComforts));
+    await AsyncStorage.setItem('onboarding_patient_comforts', JSON.stringify(selectedJoys));
     await AsyncStorage.setItem('onboarding_patient_name', preferredName.trim());
     await AsyncStorage.setItem('onboarding_patient_people', importantPeople.trim());
+    await AsyncStorage.setItem('onboarding_patient_health_notes', healthNotes.trim());
     router.push('/(onboarding)/medications');
   }
 
@@ -42,60 +45,100 @@ export default function PatientOnboardingWelcomeScreen() {
     <Screen>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={s.flex}>
         <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
+
+          <View style={s.progressWrap}>
+            <View style={s.progressBar}>
+              <View style={[s.progressFill, { width: '25%' }]} />
+            </View>
+            <Text style={s.progressLabel}>1 of 4</Text>
+          </View>
+
           <View style={s.headerBlock}>
-            <Text style={s.step}>Step 1 of 4</Text>
-            <Text style={s.title}>Set your daily comfort</Text>
-            <Text style={s.subtitle}>Share simple preferences so Orito can feel familiar.</Text>
+            <Text style={s.greeting}>Nice to meet you 👋</Text>
+            <Text style={s.title}>Tell us about yourself</Text>
+            <Text style={s.subtitle}>This helps Orito feel like a familiar friend, not a stranger.</Text>
           </View>
 
           <View style={s.section}>
-            <Text style={s.sectionTitle}>Profile</Text>
-            <Input
-              label="NAME YOU LIKE"
+            <View style={s.sectionHeader}>
+              <Ionicons name="person-circle-outline" size={20} color={colors.textMuted} />
+              <Text style={s.sectionTitle}>What should Orito call you?</Text>
+            </View>
+            <TextInput
+              style={s.input}
               value={preferredName}
               onChangeText={setPreferredName}
-              placeholder="e.g. Nana, Dad, Maria"
+              placeholder="Nana, Dad, Maria, John..."
+              placeholderTextColor={colors.textMuted}
             />
           </View>
 
           <View style={s.section}>
-            <Text style={s.sectionTitle}>Comfort Choices</Text>
-            <Text style={s.label}>WHAT HELPS YOU FEEL GOOD?</Text>
+            <View style={s.sectionHeader}>
+              <Ionicons name="sparkles-outline" size={20} color={colors.textMuted} />
+              <Text style={s.sectionTitle}>What brings you joy?</Text>
+            </View>
+            <Text style={s.hint}>Pick as many as you like — Orito will remember</Text>
             <View style={s.chipGrid}>
-              {COMFORT_OPTIONS.map((item) => {
-                const selected = selectedComforts.includes(item.key);
+              {JOY_OPTIONS.map((item) => {
+                const selected = selectedJoys.includes(item.key);
                 return (
-                  <TouchableOpacity
+                  <Pressable
                     key={item.key}
-                    style={[s.chip, selected && s.chipActive]}
-                    onPress={() => toggleComfort(item.key)}
-                    activeOpacity={0.85}
+                    style={({ pressed }) => [s.chip, selected && s.chipActive, pressed && s.chipPressed]}
+                    onPress={() => toggleJoy(item.key)}
                   >
-                    <Ionicons name={item.icon as any} size={16} color={selected ? colors.bg : colors.textSecondary} />
+                    <Ionicons name={item.icon as any} size={15} color={selected ? colors.bg : colors.textSecondary} />
                     <Text style={[s.chipText, selected && s.chipTextActive]}>{item.label}</Text>
-                  </TouchableOpacity>
+                  </Pressable>
                 );
               })}
             </View>
           </View>
 
           <View style={s.section}>
-            <Text style={s.sectionTitle}>Important People</Text>
-            <Input
-              label="PEOPLE ORITO SHOULD REMEMBER"
+            <View style={s.sectionHeader}>
+              <Ionicons name="heart-outline" size={20} color={colors.textMuted} />
+              <Text style={s.sectionTitle}>Who matters most to you?</Text>
+            </View>
+            <TextInput
+              style={[s.input, s.textArea]}
               value={importantPeople}
               onChangeText={setImportantPeople}
-              placeholder="Names you want support with"
+              placeholder="Family, friends, or anyone Orito should know about..."
+              placeholderTextColor={colors.textMuted}
               multiline
               numberOfLines={3}
-              style={s.textArea}
+              textAlignVertical="top"
             />
           </View>
 
-          <TouchableOpacity style={s.primaryBtn} onPress={handleNext} activeOpacity={0.9}>
+          <View style={s.section}>
+            <View style={s.sectionHeader}>
+              <Ionicons name="shield-checkmark-outline" size={20} color={colors.textMuted} />
+              <Text style={s.sectionTitle}>Anything Orito should keep in mind?</Text>
+            </View>
+            <Text style={s.hint}>Optional — preferences, sensitivities, or things that help you feel at ease</Text>
+            <TextInput
+              style={[s.input, s.textArea]}
+              value={healthNotes}
+              onChangeText={setHealthNotes}
+              placeholder="e.g. Prefer quiet mornings, don't like loud sounds..."
+              placeholderTextColor={colors.textMuted}
+              multiline
+              numberOfLines={3}
+              textAlignVertical="top"
+            />
+          </View>
+
+          <Pressable
+            style={({ pressed }) => [s.primaryBtn, pressed && s.primaryBtnPressed]}
+            onPress={handleNext}
+          >
             <Text style={s.primaryBtnText}>Continue</Text>
             <Ionicons name="arrow-forward" size={18} color={colors.bg} />
-          </TouchableOpacity>
+          </Pressable>
+
         </ScrollView>
       </KeyboardAvoidingView>
     </Screen>
@@ -103,30 +146,52 @@ export default function PatientOnboardingWelcomeScreen() {
 }
 
 const s = StyleSheet.create({
-  flex: {
-    flex: 1,
-  },
+  flex: { flex: 1 },
   content: {
     flexGrow: 1,
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
+    paddingTop: spacing.md,
     paddingBottom: spacing.xxl,
     gap: spacing.md,
+  },
+  progressWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  progressBar: {
+    flex: 1,
+    height: 3,
+    backgroundColor: colors.bgTertiary,
+    borderRadius: radius.full,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: colors.white,
+    borderRadius: radius.full,
+  },
+  progressLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
   },
   headerBlock: {
     gap: spacing.xs,
     marginBottom: spacing.xs,
   },
-  step: {
-    color: colors.textMuted,
-    fontSize: 11,
+  greeting: {
+    color: colors.textSecondary,
+    fontSize: fonts.sizes.sm,
     fontWeight: '600',
-    letterSpacing: 0.8,
   },
   title: {
     color: colors.textPrimary,
-    fontSize: 25,
+    fontSize: 26,
     fontWeight: '700',
+    lineHeight: 32,
   },
   subtitle: {
     color: colors.textSecondary,
@@ -141,16 +206,36 @@ const s = StyleSheet.create({
     padding: spacing.lg,
     gap: spacing.sm,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
   sectionTitle: {
     color: colors.textPrimary,
     fontSize: fonts.sizes.md,
     fontWeight: '700',
+    flex: 1,
   },
-  label: {
-    color: colors.textSecondary,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.2,
+  hint: {
+    color: colors.textMuted,
+    fontSize: fonts.sizes.xs,
+    lineHeight: 16,
+  },
+  input: {
+    backgroundColor: colors.bgTertiary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 13,
+    color: colors.textPrimary,
+    fontSize: fonts.sizes.md,
+  },
+  textArea: {
+    minHeight: 80,
+    textAlignVertical: 'top',
+    paddingTop: 13,
   },
   chipGrid: {
     flexDirection: 'row',
@@ -162,7 +247,7 @@ const s = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     paddingVertical: 9,
-    paddingHorizontal: 12,
+    paddingHorizontal: 13,
     borderRadius: radius.full,
     borderWidth: 1,
     borderColor: colors.border,
@@ -172,6 +257,9 @@ const s = StyleSheet.create({
     borderColor: colors.white,
     backgroundColor: colors.white,
   },
+  chipPressed: {
+    opacity: 0.7,
+  },
   chipText: {
     color: colors.textSecondary,
     fontSize: 12,
@@ -180,19 +268,18 @@ const s = StyleSheet.create({
   chipTextActive: {
     color: colors.bg,
   },
-  textArea: {
-    minHeight: 80,
-    textAlignVertical: 'top',
-  },
   primaryBtn: {
-    marginTop: spacing.md,
-    height: 54,
+    marginTop: spacing.sm,
+    height: 56,
     borderRadius: radius.full,
     backgroundColor: colors.white,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
+  },
+  primaryBtnPressed: {
+    opacity: 0.85,
   },
   primaryBtnText: {
     color: colors.bg,

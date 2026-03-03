@@ -29,7 +29,7 @@ interface Suggestion {
     id: string;
     title: string;
     description: string;
-    category: string;
+    type: string;
     created_at: string;
 }
 

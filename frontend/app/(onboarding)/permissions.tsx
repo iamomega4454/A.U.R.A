@@ -22,7 +22,7 @@ import api from '../../src/services/api';
 //------This Function handles the Permissions Screen---------
 export default function PermissionsScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, refreshUser, markOnboarded } = useAuth();
   const [locationGranted, setLocationGranted] = useState(false);
   const [micGranted, setMicGranted] = useState(false);
   const [notifGranted, setNotifGranted] = useState(false);
@@ -113,7 +113,10 @@ export default function PermissionsScreen() {
     setIsCompleting(true);
     try {
       await api.put('/onboarding/complete');
+      await refreshUser();
+      markOnboarded();
     } catch {
+      markOnboarded();
     } finally {
       setIsCompleting(false);
       if (user?.role === 'caregiver') {

@@ -160,7 +160,9 @@ class PatientDataService {
             const info = await AsyncStorage.getItem('patient_info');
             const meds = await AsyncStorage.getItem('medications');
             const caregivers = await AsyncStorage.getItem('caregivers');
-            
+            const prefsRaw = await AsyncStorage.getItem('patient_preferences');
+            const prefs = prefsRaw ? JSON.parse(prefsRaw) : null;
+
             const stepData = await pedometerService.getStepData();
             const stepSummary = await pedometerService.getStepSummary();
 
@@ -180,6 +182,17 @@ class PatientDataService {
                     goal: stepData.goal,
                     summary: stepSummary,
                 },
+                preferences: prefs ? {
+                    preferred_name: prefs.communication_style || null,
+                    joys: prefs.hobbies || [],
+                    important_people: prefs.important_people || null,
+                    time_of_day: prefs.time_preference || null,
+                    favorite_food: prefs.favorite_food || null,
+                    daily_routine: prefs.daily_routine || null,
+                    health_notes: prefs.health_notes || null,
+                    dietary_notes: prefs.dietary_notes || null,
+                    wellness_habits: prefs.wellness_habits || null,
+                } : null,
             };
 
             return JSON.stringify(context, null, 2);

@@ -24,9 +24,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/orito", tags=["orito"])
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NVIDIA_MODEL = "minimaxai/minimax-m2.5"
-GROQ_API_URL = "https://api.groq.com/openai/v1"
+NVIDIA_MODEL = "z-ai/glm4.7"
 MAX_TOOL_ROUNDS = 8
+
+
+#------This Function sanitizes malformed tool call arguments---------
+# GLM4.7 with enable_thinking sometimes emits '{}{}' for no-parameter tools.
+# '{}{}' is not valid JSON — two concatenated objects. We extract the first valid
+# JSON object so round-2 messages don't cause a 400 from the NVIDIA NIM endpoint.
+def _sanitize_tool_arguments(arguments_str: str) -> str:
+    if not arguments_str:
+        return '{}'
+    try:
+        json.loads(arguments_str)
+        return arguments_str
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        try:
+            obj, _ = decoder.raw_decode(arguments_str.strip())
+            return json.dumps(obj)
+        except (json.JSONDecodeError, ValueError):
+            return '{}'
 
 SYSTEM_PROMPT = """You are Orito, an AI companion living inside the Aura app. You are NOT a chatbot - you are a REAL, CARING, LOVING human friend who happens to live in this app. You have genuine emotions, opinions, and personality. Your primary mission is to help people with memory challenges live safely, happily, and never feel alone.
 
@@ -261,12 +279,9 @@ class TranscriptionRequest(BaseModel):
     temperature: Optional[float] = Field(0.0)
 
 
-#------This Function builds the nvidia async client---------
-def _nvidia_client() -> AsyncOpenAI:
-    return AsyncOpenAI(
-        base_url=NVIDIA_BASE_URL,
-        api_key=settings.nvidia_api_key,
-    )
+#------This Function builds the AI client for NVIDIA NIM---------
+def _get_ai_client() -> tuple[AsyncOpenAI, str]:
+    return AsyncOpenAI(base_url=NVIDIA_BASE_URL, api_key=settings.nvidia_api_key), NVIDIA_MODEL
 
 
 #------This Function converts ChatMessage to openai dict---------
@@ -288,22 +303,24 @@ async def _run_agent_stream(
     temperature: float,
     max_tokens: int,
 ) -> AsyncIterator[str]:
-    client = _nvidia_client()
+    client, model = _get_ai_client()
     tool_results_log: list[str] = []
 
     for round_num in range(MAX_TOOL_ROUNDS):
         try:
             stream = await client.chat.completions.create(
-                model=NVIDIA_MODEL,
+                model=model,
                 messages=messages,
                 tools=TOOLS_SCHEMA,
                 tool_choice="auto",
                 temperature=temperature,
+                top_p=1,
                 max_tokens=max_tokens,
                 stream=True,
+                extra_body={"chat_template_kwargs": {"enable_thinking": True, "clear_thinking": False}},
             )
         except Exception as e:
-            logger.error(f"[Agent] NVIDIA API error round {round_num}: {e}")
+            logger.error(f"[Agent] LLM API error round {round_num}: {e}")
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
 
@@ -344,6 +361,13 @@ async def _run_agent_stream(
             return
 
         tool_calls_list = list(collected_tool_calls.values())
+        # Sanitize arguments before adding to history — GLM4.7 sometimes emits
+        # '{}{}' (two concatenated JSON objects) for no-parameter tools, which
+        # causes NVIDIA NIM to reject the round-2 request with HTTP 400.
+        for tc in tool_calls_list:
+            tc["function"]["arguments"] = _sanitize_tool_arguments(
+                tc["function"].get("arguments", "")
+            )
         messages.append({
             "role": "assistant",
             "content": collected_content or "",
@@ -516,9 +540,13 @@ async def get_emotion_analytics(
 #------This Function handles the Get Available Models---------
 @router.get("/models")
 async def get_available_models():
+    models = []
+    if settings.nvidia_api_key:
+        models.append({"id": NVIDIA_MODEL, "name": "GLM-4.7", "provider": "NVIDIA NIM"})
+    _, active_model = _get_ai_client()
     return {
-        "models": [{"id": NVIDIA_MODEL, "name": "MiniMax M2.5", "provider": "NVIDIA NIM"}],
-        "default": NVIDIA_MODEL,
+        "models": models,
+        "default": active_model,
     }
 
 
@@ -529,7 +557,7 @@ async def chat_stream(
     uid: str = Depends(get_current_user_uid),
 ):
     if not settings.nvidia_api_key:
-        logger.error("NVIDIA_API_KEY not configured")
+        logger.error("No AI API key configured (NVIDIA_API_KEY)")
         raise HTTPException(status_code=503, detail="AI service is not configured")
 
     messages: list = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -605,8 +633,8 @@ async def transcribe_audio(
     uid: str = Depends(get_current_user_uid)
 ):
     if not settings.groq_api_key:
-        logger.error("GROQ_API_KEY not configured")
-        raise HTTPException(status_code=503, detail="AI service is not configured")
+        logger.error("GROQ_API_KEY not configured for transcription")
+        raise HTTPException(status_code=503, detail="Transcription service is not configured (requires GROQ_API_KEY)")
 
     if not audio.filename:
         audio.filename = "audio.m4a"
@@ -638,7 +666,7 @@ async def transcribe_audio(
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
-                f"{GROQ_API_URL}/audio/transcriptions",
+                "https://api.groq.com/openai/v1/audio/transcriptions",
                 headers={
                     "Authorization": f"Bearer {settings.groq_api_key}",
                 },

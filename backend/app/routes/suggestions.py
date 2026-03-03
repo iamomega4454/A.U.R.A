@@ -2,6 +2,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from typing import Optional, List
+from beanie.operators import In
 from app.core.firebase import get_current_user_uid
 from app.models.suggestion import (
     Suggestion,
@@ -48,8 +49,8 @@ class CreateSuggestionRequest(BaseModel):
     @field_validator('priority')
     @classmethod
     def validate_priority(cls, v: int) -> int:
-        if v < 1 or v > 5:
-            raise ValueError('Priority must be between 1 and 5')
+        if v < 0 or v > 5:
+            raise ValueError('Priority must be between 0 and 5')
         return v
 
 
@@ -106,6 +107,28 @@ async def get_active_suggestions(
         await suggestion.save()
 
     return [_serialize_suggestion(s) for s in suggestions]
+
+
+#------This Function gets suggestion---------
+@router.get("/history/stats")
+async def get_suggestion_stats(uid: str = Depends(get_current_user_uid)):
+    history = await SuggestionHistory.find(SuggestionHistory.user_uid == uid).to_list()
+
+    total = len(history)
+    dismissed = len([h for h in history if h.action_taken == "dismissed"])
+    completed = len([h for h in history if h.action_taken == "completed"])
+    confirmed = len([h for h in history if h.action_taken == "confirmed"])
+    helpful = len([h for h in history if h.was_helpful is True])
+
+    return {
+        "total_interactions": total,
+        "dismissed_count": dismissed,
+        "completed_count": completed,
+        "confirmed_count": confirmed,
+        "helpful_count": helpful,
+        "completion_rate": (completed / total * 100) if total > 0 else 0,
+        "helpfulness_rate": (helpful / total * 100) if total > 0 else 0,
+    }
 
 
 #------This Function gets suggestion---------
@@ -249,28 +272,6 @@ async def complete_suggestion(
     return {"status": "completed"}
 
 
-#------This Function gets suggestion stats---------
-@router.get("/history/stats")
-async def get_suggestion_stats(uid: str = Depends(get_current_user_uid)):
-    history = await SuggestionHistory.find(SuggestionHistory.user_uid == uid).to_list()
-
-    total = len(history)
-    dismissed = len([h for h in history if h.action_taken == "dismissed"])
-    completed = len([h for h in history if h.action_taken == "completed"])
-    confirmed = len([h for h in history if h.action_taken == "confirmed"])
-    helpful = len([h for h in history if h.was_helpful is True])
-
-    return {
-        "total_interactions": total,
-        "dismissed_count": dismissed,
-        "completed_count": completed,
-        "confirmed_count": confirmed,
-        "helpful_count": helpful,
-        "completion_rate": (completed / total * 100) if total > 0 else 0,
-        "helpfulness_rate": (helpful / total * 100) if total > 0 else 0,
-    }
-
-
 #------This Function generates suggestions---------
 @router.post("/generate")
 async def generate_suggestions(uid: str = Depends(get_current_user_uid)):
@@ -344,12 +345,7 @@ async def generate_suggestions(uid: str = Depends(get_current_user_uid)):
 async def clear_old_suggestions(uid: str = Depends(get_current_user_uid)):
     result = await Suggestion.find(
         Suggestion.user_uid == uid,
-        {
-            "$or": [
-                {"status": SuggestionStatus.DISMISSED},
-                {"status": SuggestionStatus.COMPLETED},
-            ]
-        },
+        In(Suggestion.status, [SuggestionStatus.DISMISSED, SuggestionStatus.COMPLETED]),
     ).delete()
 
     return {"status": "cleared", "deleted_count": result.deleted_count if result else 0}

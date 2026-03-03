@@ -24,6 +24,7 @@ interface AuthState {
     signIn: (idToken: string, email: string, name: string, photo: string) => Promise<void>;
     signOut: () => Promise<void>;
     refreshUser: () => Promise<void>;
+    markOnboarded: () => void;
     devSignIn: (role: 'patient' | 'caregiver' | 'admin') => void;
     isVoiceSetup: boolean;
     setVoiceSetup: (done: boolean) => Promise<void>;
@@ -38,6 +39,7 @@ const AuthContext = createContext<AuthState>({
     signIn: async () => { },
     signOut: async () => { },
     refreshUser: async () => { },
+    markOnboarded: () => { },
     devSignIn: () => { },
     isVoiceSetup: false,
     setVoiceSetup: async () => { },
@@ -233,6 +235,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch { }
     }
 
+    //------This Function handles the Mark Onboarded---------
+    function markOnboarded() {
+        setUser((prev) => {
+            if (!prev) {
+                return prev;
+            }
+            return { ...prev, is_onboarded: true };
+        });
+    }
+
     //------This Function handles the Set Voice Setup---------
     async function setVoiceSetup(done: boolean) {
         await AsyncStorage.setItem('isVoiceSetup', done ? 'true' : 'false');
@@ -241,8 +253,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return (
         <AuthContext.Provider value={{
-            user, token, loading, connectionError, signIn, signOut, refreshUser,
-            devSignIn, isVoiceSetup, setVoiceSetup, initialLoadDone
+            user,
+            token,
+            loading,
+            connectionError,
+            signIn,
+            signOut,
+            refreshUser,
+            markOnboarded,
+            devSignIn,
+            isVoiceSetup,
+            setVoiceSetup,
+            initialLoadDone,
         }}>
             {children}
         </AuthContext.Provider>

@@ -2108,7 +2108,13 @@ export async function executeToolCall(name: string, args: any): Promise<string> 
             case 'get_suggestions': {
                 try {
                     const type = args.type || 'all';
-                    const response = await api.get(`/suggestions/${type === 'all' ? 'active' : type}`);
+                    // When type is 'all', use /suggestions/active (highest priority, active only).
+                    // When a specific type is requested, use /suggestions/?type=<type> — the
+                    // /suggestions/<type> path does NOT exist and would return 404.
+                    const url = type === 'all'
+                        ? '/suggestions/active'
+                        : `/suggestions/?type=${encodeURIComponent(type)}`;
+                    const response = await api.get(url);
                     const suggestions = response.data;
                     if (!suggestions || suggestions.length === 0) return 'No suggestions available right now';
                     return suggestions.map((s: any) =>

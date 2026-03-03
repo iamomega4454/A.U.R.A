@@ -10,18 +10,15 @@ import {
     Image,
     ActivityIndicator,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fonts, spacing, radius } from '../../src/theme';
 import { useAuth } from '../../src/context/auth';
-import { useAura } from '../../src/context/aura';
 import { usePreferences } from '../../src/context/preferences';
 import api from '../../src/services/api';
 import Header from '../../src/components/Header';
 import Screen from '../../src/components/Screen';
 import * as Haptics from 'expo-haptics';
-import nativeSpeechService from '../../src/services/nativeSpeech';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -112,11 +109,6 @@ const DEFAULT_SETTINGS_DATA: SettingsData = {
         reduce_motion: false,
     },
 };
-
-//------This Function handles the Clamp---------
-function clamp(value: number, min: number, max: number): number {
-    return Math.min(max, Math.max(min, value));
-}
 
 //------This Function handles the Section Card---------
 function SectionCard({
@@ -231,79 +223,17 @@ function NavRow({
     );
 }
 
-//------This Function handles the Stepper Row---------
-function StepperRow({
-    icon,
-    label,
-    subtitle,
-    valueLabel,
-    onDecrease,
-    onIncrease,
-    fontScale,
-    disabled,
-}: {
-    icon: IconName;
-    label: string;
-    subtitle?: string;
-    valueLabel: string;
-    onDecrease: () => void;
-    onIncrease: () => void;
-    fontScale: number;
-    disabled?: boolean;
-}) {
-    return (
-        <View style={[s.row, disabled && s.rowDisabled]}>
-            <View style={s.rowLeft}>
-                <View style={s.rowIconWrap}>
-                    <Ionicons name={icon} size={16} color={colors.textSecondary} />
-                </View>
-                <View style={s.rowTextWrap}>
-                    <Text style={[s.rowLabel, { fontSize: 14 * fontScale }]}>{label}</Text>
-                    {subtitle ? <Text style={[s.rowSub, { fontSize: 11 * fontScale }]}>{subtitle}</Text> : null}
-                </View>
-            </View>
-            <View style={s.stepperWrap}>
-                <TouchableOpacity
-                    style={s.stepperBtn}
-                    onPress={onDecrease}
-                    activeOpacity={0.85}
-                    disabled={disabled}
-                >
-                    <Ionicons name="remove" size={14} color={colors.textPrimary} />
-                </TouchableOpacity>
-                <Text style={[s.stepperValue, { fontSize: 12 * fontScale }]}>{valueLabel}</Text>
-                <TouchableOpacity
-                    style={s.stepperBtn}
-                    onPress={onIncrease}
-                    activeOpacity={0.85}
-                    disabled={disabled}
-                >
-                    <Ionicons name="add" size={14} color={colors.textPrimary} />
-                </TouchableOpacity>
-            </View>
-        </View>
-    );
-}
-
 //------This Function handles the Settings Screen---------
 export default function SettingsScreen() {
     const router = useRouter();
     const { user, signOut } = useAuth();
-    const { isConnected, disconnect } = useAura();
-    const { fontSize, setFontSize, fontScale } = usePreferences();
+    const { fontScale } = usePreferences();
 
     const [settings, setSettings] = useState<SettingsData>(DEFAULT_SETTINGS_DATA);
     const [loading, setLoading] = useState(true);
-    const [isSpeaking, setIsSpeaking] = useState(false);
 
     useEffect(() => {
         loadSettings();
-    }, []);
-
-    useEffect(() => {
-        return () => {
-            void nativeSpeechService.stopSpeaking();
-        };
     }, []);
 
     //------This Function handles the Load Settings---------
@@ -312,26 +242,13 @@ export default function SettingsScreen() {
         try {
             const res = await api.get('/settings/');
             const data = res.data || {};
-            const privacyData = data.privacy || {};
-
             setSettings({
                 notifications: { ...DEFAULT_SETTINGS_DATA.notifications, ...data.notifications },
                 appearance: { ...DEFAULT_SETTINGS_DATA.appearance, ...data.appearance },
-                privacy: {
-                    ...DEFAULT_SETTINGS_DATA.privacy,
-                    ...privacyData,
-                    share_data_with_caregivers: (
-                        privacyData.share_data_with_caregivers
-                        ?? privacyData.share_with_caregivers
-                        ?? DEFAULT_SETTINGS_DATA.privacy.share_data_with_caregivers
-                    ),
-                },
+                privacy: { ...DEFAULT_SETTINGS_DATA.privacy, ...data.privacy },
                 voice: { ...DEFAULT_SETTINGS_DATA.voice, ...data.voice },
                 accessibility: { ...DEFAULT_SETTINGS_DATA.accessibility, ...data.accessibility },
             });
-            // Cache voice settings for TTS use in chat screen
-            const voiceData = { ...DEFAULT_SETTINGS_DATA.voice, ...data.voice };
-            AsyncStorage.setItem('user_settings_voice', JSON.stringify(voiceData)).catch(() => {});
         } catch (error) {
             console.warn('[Settings] Failed to load settings, using defaults', error);
             setSettings(DEFAULT_SETTINGS_DATA);
@@ -346,14 +263,7 @@ export default function SettingsScreen() {
         options?: { showError?: boolean }
     ) {
         const previous = settings[category];
-        setSettings((prev) => {
-            const updated = { ...prev, [category]: { ...prev[category], ...updates } };
-            if (category === 'voice') {
-                AsyncStorage.setItem('user_settings_voice', JSON.stringify(updated.voice)).catch(() => {});
-            }
-            return updated;
-        });
-
+        setSettings((prev) => ({ ...prev, [category]: { ...prev[category], ...updates } }));
         try {
             await api.patch(`/settings/${category}`, updates);
         } catch (error) {
@@ -365,53 +275,6 @@ export default function SettingsScreen() {
         }
     }
 
-    //------This Function handles the Handle Font Size Change---------
-    async function handleFontSizeChange(size: 'small' | 'medium' | 'large') {
-        if (fontSize === size) {
-            return;
-        }
-        Haptics.selectionAsync();
-        try {
-            await setFontSize(size);
-            await updateCategory('appearance', { font_size: size }, { showError: false });
-        } catch (error) {
-            console.error('[Settings] failed to update font size', error);
-            Alert.alert('Error', 'Could not update font size.');
-        }
-    }
-
-    //------This Function handles the Handle Test Voice---------
-    async function handleTestVoice() {
-        if (isSpeaking) {
-            await nativeSpeechService.stopSpeaking();
-            setIsSpeaking(false);
-            return;
-        }
-
-        setIsSpeaking(true);
-        try {
-            await nativeSpeechService.speak('Hi, I am Orito. Your settings are looking great.', {
-                language: settings.voice.language,
-                pitch: settings.voice.voice_pitch,
-                rate: settings.voice.voice_speed,
-                voiceGender: settings.voice.voice_gender,
-            });
-            Haptics.selectionAsync();
-        } catch (error) {
-            console.error('[Settings] voice test failed', error);
-            Alert.alert('Voice Error', 'Could not test voice right now.');
-        } finally {
-            setIsSpeaking(false);
-        }
-    }
-
-    //------This Function handles the Adjust Voice Speed---------
-    function adjustVoiceSpeed(delta: number) {
-        const nextSpeed = Number(clamp(settings.voice.voice_speed + delta, 0.5, 2).toFixed(1));
-        Haptics.selectionAsync();
-        updateCategory('voice', { voice_speed: nextSpeed });
-    }
-
     //------This Function handles the Confirm Sign Out---------
     function confirmSignOut() {
         Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
@@ -420,7 +283,6 @@ export default function SettingsScreen() {
                 text: 'Sign Out',
                 style: 'destructive',
                 onPress: async () => {
-                    disconnect();
                     await signOut();
                 },
             },
@@ -462,70 +324,6 @@ export default function SettingsScreen() {
                     </View>
                 </TouchableOpacity>
 
-                <SectionCard title="Voice & Aura" subtitle="Assistant and hardware controls">
-                    <ToggleRow
-                        icon="mic-outline"
-                        label="Voice Assistant"
-                        subtitle="Enable voice interactions with Orito"
-                        value={settings.voice.voice_assistant_enabled}
-                        onToggle={(next) => {
-                            Haptics.selectionAsync();
-                            updateCategory('voice', { voice_assistant_enabled: next });
-                        }}
-                        fontScale={fontScale}
-                    />
-                    <ToggleRow
-                        icon="chatbubble-ellipses-outline"
-                        label="Voice Feedback"
-                        subtitle="Hear spoken responses from the assistant"
-                        value={settings.voice.voice_feedback}
-                        onToggle={(next) => {
-                            Haptics.selectionAsync();
-                            updateCategory('voice', { voice_feedback: next });
-                        }}
-                        disabled={!settings.voice.voice_assistant_enabled}
-                        fontScale={fontScale}
-                    />
-                    <StepperRow
-                        icon="speedometer-outline"
-                        label="Voice Speed"
-                        subtitle="Adjust speaking rate"
-                        valueLabel={`${settings.voice.voice_speed.toFixed(1)}x`}
-                        onDecrease={() => adjustVoiceSpeed(-0.1)}
-                        onIncrease={() => adjustVoiceSpeed(0.1)}
-                        disabled={!settings.voice.voice_assistant_enabled}
-                        fontScale={fontScale}
-                    />
-                    <NavRow
-                        icon="settings-outline"
-                        label="Voice Setup"
-                        subtitle="Reconfigure microphone onboarding"
-                        onPress={() => router.push('/(patient)/voice-setup')}
-                        fontScale={fontScale}
-                    />
-                    <NavRow
-                        icon="hardware-chip-outline"
-                        label={isConnected ? 'Aura Connected' : 'Connect Aura'}
-                        subtitle={isConnected ? 'Device is online and ready' : 'Pair with your Aura module'}
-                        rightText={isConnected ? 'Online' : 'Offline'}
-                        rightTextActive={isConnected}
-                        onPress={() => router.push('/(patient)/connect-aura')}
-                        fontScale={fontScale}
-                        last
-                    />
-                </SectionCard>
-
-                {settings.voice.voice_assistant_enabled && (
-                    <TouchableOpacity style={s.testVoiceBtn} onPress={handleTestVoice} activeOpacity={0.9}>
-                        <Ionicons
-                            name={isSpeaking ? 'stop-circle-outline' : 'play-circle-outline'}
-                            size={18}
-                            color={colors.bg}
-                        />
-                        <Text style={s.testVoiceText}>{isSpeaking ? 'Stop Voice Test' : 'Test Voice'}</Text>
-                    </TouchableOpacity>
-                )}
-
                 <SectionCard title="Notifications" subtitle="Choose what should alert you">
                     <ToggleRow
                         icon="notifications-outline"
@@ -559,142 +357,15 @@ export default function SettingsScreen() {
                         }}
                         disabled={!settings.notifications.enabled}
                         fontScale={fontScale}
-                    />
-                    <ToggleRow
-                        icon="bulb-outline"
-                        label="Daily Insights"
-                        value={settings.notifications.daily_insights}
-                        onToggle={(next) => {
-                            Haptics.selectionAsync();
-                            updateCategory('notifications', { daily_insights: next });
-                        }}
-                        disabled={!settings.notifications.enabled}
-                        fontScale={fontScale}
                         last
                     />
                 </SectionCard>
 
-                <SectionCard title="Display & Accessibility" subtitle="Visual and interaction preferences">
-                    <View style={s.row}>
-                        <View style={s.rowLeft}>
-                            <View style={s.rowIconWrap}>
-                                <Ionicons name="text-outline" size={16} color={colors.textSecondary} />
-                            </View>
-                            <View style={s.rowTextWrap}>
-                                <Text style={[s.rowLabel, { fontSize: 14 * fontScale }]}>Font Size</Text>
-                                <Text style={[s.rowSub, { fontSize: 11 * fontScale }]}>Adjust text readability</Text>
-                            </View>
-                        </View>
-                        <View style={s.fontControlWrap}>
-                            {(['small', 'medium', 'large'] as const).map((size) => (
-                                <TouchableOpacity
-                                    key={size}
-                                    onPress={() => handleFontSizeChange(size)}
-                                    style={[s.fontBtn, fontSize === size && s.fontBtnActive]}
-                                    activeOpacity={0.85}
-                                >
-                                    <Text
-                                        style={[
-                                            s.fontBtnText,
-                                            size === 'small' && { fontSize: 11 },
-                                            size === 'medium' && { fontSize: 13 },
-                                            size === 'large' && { fontSize: 16 },
-                                            fontSize === size && s.fontBtnTextActive,
-                                        ]}
-                                    >
-                                        A
-                                    </Text>
-                                </TouchableOpacity>
-                            ))}
-                        </View>
-                    </View>
-
-                    <ToggleRow
-                        icon="contrast-outline"
-                        label="High Contrast"
-                        subtitle="Increase visual separation"
-                        value={settings.appearance.high_contrast}
-                        onToggle={(next) => {
-                            Haptics.selectionAsync();
-                            updateCategory('appearance', { high_contrast: next });
-                        }}
-                        fontScale={fontScale}
-                    />
-
-                    <ToggleRow
-                        icon="apps-outline"
-                        label="Large Buttons"
-                        subtitle="Increase touch target sizes"
-                        value={settings.accessibility.large_buttons}
-                        onToggle={(next) => {
-                            Haptics.selectionAsync();
-                            updateCategory('accessibility', { large_buttons: next });
-                        }}
-                        fontScale={fontScale}
-                    />
-
-                    <ToggleRow
-                        icon="move-outline"
-                        label="Reduce Motion"
-                        subtitle="Limit interface animations"
-                        value={settings.accessibility.reduce_motion}
-                        onToggle={(next) => {
-                            Haptics.selectionAsync();
-                            updateCategory('accessibility', { reduce_motion: next });
-                        }}
-                        fontScale={fontScale}
-                        last
-                    />
-                </SectionCard>
-
-                <SectionCard title="Privacy" subtitle="Control what data is shared">
-                    <ToggleRow
-                        icon="location-outline"
-                        label="Location Tracking"
-                        value={settings.privacy.location_tracking}
-                        onToggle={(next) => {
-                            Haptics.selectionAsync();
-                            updateCategory('privacy', { location_tracking: next });
-                        }}
-                        fontScale={fontScale}
-                    />
-                    <ToggleRow
-                        icon="people-outline"
-                        label="Share with Caregivers"
-                        subtitle="Allow caregivers to view status"
-                        value={settings.privacy.share_data_with_caregivers}
-                        onToggle={(next) => {
-                            Haptics.selectionAsync();
-                            updateCategory('privacy', { share_data_with_caregivers: next });
-                        }}
-                        fontScale={fontScale}
-                    />
-                    <ToggleRow
-                        icon="analytics-outline"
-                        label="Anonymous Analytics"
-                        subtitle="Help improve reliability"
-                        value={settings.privacy.anonymous_analytics}
-                        onToggle={(next) => {
-                            Haptics.selectionAsync();
-                            updateCategory('privacy', { anonymous_analytics: next });
-                        }}
-                        fontScale={fontScale}
-                        last
-                    />
-                </SectionCard>
-
-                <SectionCard title="Medical Data" subtitle="Manage health records">
-                    <NavRow
-                        icon="fitness-outline"
-                        label="Condition"
-                        subtitle="Diagnosis and severity"
-                        onPress={() => router.push('/(patient)/edit-condition')}
-                        fontScale={fontScale}
-                    />
+                <SectionCard title="My Care" subtitle="Manage medications and caregivers">
                     <NavRow
                         icon="medkit-outline"
                         label="Medications"
-                        subtitle="Dose and schedule"
+                        subtitle="Doses and schedule"
                         onPress={() => router.push('/(patient)/edit-medications')}
                         fontScale={fontScale}
                     />
@@ -703,13 +374,6 @@ export default function SettingsScreen() {
                         label="Caregivers"
                         subtitle="Trusted contacts and support"
                         onPress={() => router.push('/(patient)/edit-caregivers')}
-                        fontScale={fontScale}
-                    />
-                    <NavRow
-                        icon="document-text-outline"
-                        label="Medical Information"
-                        subtitle="Overview of stored data"
-                        onPress={() => router.push('/(patient)/patient-info')}
                         fontScale={fontScale}
                         last
                     />
@@ -910,71 +574,6 @@ const s = StyleSheet.create({
         fontWeight: '600',
     },
     statusPillTextActive: {
-        color: colors.bg,
-    },
-    stepperWrap: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.xs,
-        borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: radius.full,
-        backgroundColor: colors.surface,
-        paddingHorizontal: spacing.xs,
-        paddingVertical: 4,
-    },
-    stepperBtn: {
-        width: 24,
-        height: 24,
-        borderRadius: 12,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: colors.bgTertiary,
-    },
-    stepperValue: {
-        minWidth: 42,
-        textAlign: 'center',
-        color: colors.textPrimary,
-        fontWeight: '600',
-    },
-    testVoiceBtn: {
-        height: 44,
-        borderRadius: radius.full,
-        backgroundColor: colors.white,
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexDirection: 'row',
-        gap: spacing.xs,
-    },
-    testVoiceText: {
-        color: colors.bg,
-        fontSize: fonts.sizes.sm,
-        fontWeight: '600',
-    },
-    fontControlWrap: {
-        flexDirection: 'row',
-        backgroundColor: colors.surface,
-        borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: radius.full,
-        padding: 3,
-        gap: 3,
-    },
-    fontBtn: {
-        width: 28,
-        height: 28,
-        borderRadius: 14,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    fontBtnActive: {
-        backgroundColor: colors.primary,
-    },
-    fontBtnText: {
-        color: colors.textSecondary,
-        fontWeight: '600',
-    },
-    fontBtnTextActive: {
         color: colors.bg,
     },
     versionText: {

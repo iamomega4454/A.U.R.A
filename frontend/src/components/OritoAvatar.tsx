@@ -1,7 +1,17 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { GLView, ExpoWebGLRenderingContext } from 'expo-gl';
-import * as THREE from 'three';
+import Animated, {
+    useSharedValue,
+    useAnimatedStyle,
+    withRepeat,
+    withTiming,
+    withSequence,
+    useDerivedValue,
+    cancelAnimation,
+    Easing,
+    interpolate,
+    interpolateColor,
+} from 'react-native-reanimated';
 
 export type AvatarState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -10,270 +20,373 @@ interface OritoAvatarProps {
     size?: number;
 }
 
-interface ExpoCanvasShim {
-    width: number;
-    height: number;
-    style: Record<string, unknown>;
-    clientHeight: number;
-    clientWidth: number;
-    addEventListener: () => void;
-    removeEventListener: () => void;
-    setAttribute: () => void;
-    getContext: () => WebGLRenderingContext;
-}
+const STATE_IDX: Record<AvatarState, number> = { idle: 0, listening: 1, thinking: 2, speaking: 3 };
 
-//------This Function creates a minimal canvas shim required by Three.js in Expo GL---------
-function createExpoCanvasShim(
-    gl: ExpoWebGLRenderingContext,
-    width: number,
-    height: number,
-): ExpoCanvasShim {
-    return {
-        width,
-        height,
-        style: {},
-        clientHeight: height,
-        clientWidth: width,
-        addEventListener: () => { },
-        removeEventListener: () => { },
-        setAttribute: () => { },
-        getContext: () => gl as unknown as WebGLRenderingContext,
-    };
-}
+// Per-state colour palettes [idle, listening, thinking, speaking]
+const GLOW_COLORS  = ['#0a4a7a', '#8a1a5a', '#4a1a8a', '#0a6a3a'];
+const EYE_COLORS   = ['#33ccff', '#ff55bb', '#bb55ff', '#33ffbb'];
+const HEAD_COLORS  = ['#081424', '#180820', '#0e0820', '#081810'];
 
-//------This Component renders Orito's 3D low-poly avatar---------
+//------This Component renders Orito's animated avatar using Reanimated---------
 export default function OritoAvatar({ state = 'idle', size = 200 }: OritoAvatarProps) {
-    const stateRef = useRef<AvatarState>(state);
-    const rafRef = useRef<number | null>(null);
-    const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-    const meshRef = useRef<THREE.Mesh | null>(null);
-    const particlesRef = useRef<THREE.Points | null>(null);
-    const timerRef = useRef(new THREE.Timer());
 
+    // ── Shared values ─────────────────────────────────────────────────────────
+    // stateIdx as shared value so worklets can read it reactively
+    const stateIdx = useSharedValue<number>(STATE_IDX[state]);
+    const time     = useSharedValue<number>(0);
+    const blinkOpen = useSharedValue<number>(1);
+    const mouthOpen = useSharedValue<number>(0); // 0=smile closed, 1=open
+
+    const blinkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Update stateIdx whenever the prop changes
     useEffect(() => {
-        stateRef.current = state;
+        stateIdx.value = STATE_IDX[state];
+        // Animate mouth open when speaking
+        mouthOpen.value = withTiming(state === 'speaking' ? 1 : 0, { duration: 200 });
     }, [state]);
 
-    //------This Function handles the GL context creation---------
-    const onContextCreate = useCallback(async (gl: ExpoWebGLRenderingContext) => {
-        const { drawingBufferWidth: w, drawingBufferHeight: h } = gl;
-
-        // Scene
-        const scene = new THREE.Scene();
-        scene.background = null;
-
-        // Camera
-        const camera = new THREE.PerspectiveCamera(60, w / h, 0.1, 100);
-        camera.position.set(0, 0, 3);
-
-        // Renderer using ExpoGL context
-        const canvas = createExpoCanvasShim(gl, w, h);
-        const renderer = new THREE.WebGLRenderer({
-            // Three expects a DOM-like canvas object in React Native runtimes.
-            canvas: canvas as unknown as HTMLCanvasElement,
-            context: gl as unknown as WebGLRenderingContext,
-            antialias: true,
-            alpha: true,
-        });
-        renderer.setSize(w, h, false);
-        renderer.setPixelRatio(1);
-        renderer.setClearColor(0x000000, 0);
-        rendererRef.current = renderer;
-
-        // Lighting
-        const ambientLight = new THREE.AmbientLight(0x8855ff, 0.6);
-        scene.add(ambientLight);
-
-        const pointLight1 = new THREE.PointLight(0x00ffff, 2.5, 10);
-        pointLight1.position.set(2, 2, 2);
-        scene.add(pointLight1);
-
-        const pointLight2 = new THREE.PointLight(0xff00ff, 1.5, 10);
-        pointLight2.position.set(-2, -1, 1);
-        scene.add(pointLight2);
-
-        // ── Build low-poly avatar head from icosahedron ──────────────────────
-        const headGeo = new THREE.IcosahedronGeometry(0.85, 1);
-
-        // Distort vertices slightly for a hand-crafted poly look
-        const pos = headGeo.attributes.position;
-        for (let i = 0; i < pos.count; i++) {
-            const x = pos.getX(i);
-            const y = pos.getY(i);
-            const z = pos.getZ(i);
-            const noise = 0.08 * (Math.random() - 0.5);
-            pos.setXYZ(i, x + noise, y + noise, z + noise);
-        }
-        headGeo.computeVertexNormals();
-
-        const headMat = new THREE.MeshPhongMaterial({
-            color: 0x1a1a2e,
-            emissive: 0x0d0d1a,
-            specular: 0x00ffff,
-            shininess: 80,
-            wireframe: false,
-            transparent: true,
-            opacity: 0.92,
-            flatShading: true,
-        });
-        const head = new THREE.Mesh(headGeo, headMat);
-        scene.add(head);
-        meshRef.current = head;
-
-        // Wireframe overlay
-        const wireMat = new THREE.MeshBasicMaterial({
-            color: 0x00ffff,
-            wireframe: true,
-            transparent: true,
-            opacity: 0.15,
-        });
-        const wireframe = new THREE.Mesh(headGeo, wireMat);
-        scene.add(wireframe);
-
-        // ── Eyes ─────────────────────────────────────────────────────────────
-        const eyeGeo = new THREE.SphereGeometry(0.09, 8, 8);
-        const eyeMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
-
-        const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
-        leftEye.position.set(-0.26, 0.16, 0.76);
-        scene.add(leftEye);
-
-        const rightEye = new THREE.Mesh(eyeGeo, eyeMat.clone());
-        rightEye.position.set(0.26, 0.16, 0.76);
-        scene.add(rightEye);
-
-        // Eye glow rings
-        const ringGeo = new THREE.RingGeometry(0.09, 0.15, 16);
-        const ringMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.4 });
-        const leftRing = new THREE.Mesh(ringGeo, ringMat);
-        leftRing.position.copy(leftEye.position);
-        leftRing.position.z += 0.01;
-        scene.add(leftRing);
-
-        const rightRing = new THREE.Mesh(ringGeo, ringMat.clone());
-        rightRing.position.copy(rightEye.position);
-        rightRing.position.z += 0.01;
-        scene.add(rightRing);
-
-        // ── Floating particles ────────────────────────────────────────────────
-        const PARTICLE_COUNT = 120;
-        const particlePositions = new Float32Array(PARTICLE_COUNT * 3);
-        const particleSpeeds = new Float32Array(PARTICLE_COUNT);
-        for (let i = 0; i < PARTICLE_COUNT; i++) {
-            const angle = Math.random() * Math.PI * 2;
-            const radius = 1.3 + Math.random() * 0.8;
-            particlePositions[i * 3]     = Math.cos(angle) * radius;
-            particlePositions[i * 3 + 1] = (Math.random() - 0.5) * 2;
-            particlePositions[i * 3 + 2] = Math.sin(angle) * radius;
-            particleSpeeds[i] = 0.3 + Math.random() * 0.7;
-        }
-        const particleGeo = new THREE.BufferGeometry();
-        particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
-        const particleMat = new THREE.PointsMaterial({ color: 0x88aaff, size: 0.04, transparent: true, opacity: 0.7 });
-        const particles = new THREE.Points(particleGeo, particleMat);
-        scene.add(particles);
-        particlesRef.current = particles;
-
-        // ── Animation loop ────────────────────────────────────────────────────
-        let t = 0;
-        timerRef.current.reset();
-        const animate = (timestamp?: number) => {
-            rafRef.current = requestAnimationFrame(animate);
-            timerRef.current.update(timestamp);
-            const dt = timerRef.current.getDelta();
-            t += dt;
-
-            const s = stateRef.current;
-
-            // Head rotation and bob
-            if (s === 'listening') {
-                head.rotation.y = Math.sin(t * 1.5) * 0.25;
-                head.rotation.x = Math.sin(t * 0.8) * 0.08;
-                head.scale.setScalar(1.0 + Math.sin(t * 4) * 0.015);
-            } else if (s === 'thinking') {
-                head.rotation.y += dt * 1.2;
-                head.rotation.x = Math.sin(t * 1.2) * 0.12;
-                head.scale.setScalar(1.0);
-            } else if (s === 'speaking') {
-                head.rotation.y = Math.sin(t * 2.0) * 0.18;
-                head.rotation.x = Math.sin(t * 3.0) * 0.06;
-                head.scale.setScalar(1.0 + Math.abs(Math.sin(t * 6)) * 0.03);
-            } else {
-                // Idle – gentle float
-                head.rotation.y = Math.sin(t * 0.4) * 0.12;
-                head.rotation.x = Math.sin(t * 0.3) * 0.04;
-                head.position.y = Math.sin(t * 0.6) * 0.04;
-                head.scale.setScalar(1.0);
-            }
-            wireframe.rotation.copy(head.rotation);
-            wireframe.position.copy(head.position);
-            wireframe.scale.copy(head.scale);
-
-            // Eye pulse
-            const eyePulse = 0.85 + Math.abs(Math.sin(t * 1.5)) * 0.3;
-            const eyeHue = s === 'thinking'
-                ? 0.75
-                : s === 'speaking'
-                    ? 0.82
-                    : 0.5;
-            (leftEye.material as THREE.MeshBasicMaterial).color.setHSL(
-                eyeHue,
-                1, eyePulse * 0.5
-            );
-            (rightEye.material as THREE.MeshBasicMaterial).color.copy(
-                (leftEye.material as THREE.MeshBasicMaterial).color
-            );
-
-            // Particle orbit
-            const pPos = particleGeo.attributes.position as THREE.BufferAttribute;
-            const speed = s === 'listening' ? 0.8 : s === 'thinking' ? 1.5 : s === 'speaking' ? 1.2 : 0.4;
-            for (let i = 0; i < PARTICLE_COUNT; i++) {
-                const px = pPos.getX(i);
-                const pz = pPos.getZ(i);
-                const a = Math.atan2(pz, px) + dt * particleSpeeds[i] * speed;
-                const r = Math.sqrt(px * px + pz * pz);
-                pPos.setX(i, Math.cos(a) * r);
-                pPos.setZ(i, Math.sin(a) * r);
-                pPos.setY(i, pPos.getY(i) + Math.sin(t + i) * dt * 0.15);
-            }
-            pPos.needsUpdate = true;
-
-            // Light colour by state
-            const lCol = s === 'thinking'
-                ? 0xaa00ff
-                : s === 'speaking'
-                    ? 0xff88ff
-                    : 0x00ffff;
-            pointLight1.color.setHex(lCol);
-
-            renderer.render(scene, camera);
-            // @ts-ignore
-            gl.endFrameEXP();
-        };
-        animate();
-    }, []);
-
+    // Continuous time driver
     useEffect(() => {
-        return () => {
-            if (rafRef.current) cancelAnimationFrame(rafRef.current);
-            rendererRef.current?.dispose();
-            timerRef.current.dispose();
-        };
+        time.value = withRepeat(
+            withTiming(100, { duration: 100_000, easing: Easing.linear }),
+            -1, false,
+        );
+        return () => { cancelAnimation(time); };
     }, []);
+
+    // Blink loop
+    useEffect(() => {
+        const schedule = () => {
+            const delay = 2500 + Math.random() * 2000;
+            blinkTimer.current = setTimeout(() => {
+                blinkOpen.value = withSequence(
+                    withTiming(0.06, { duration: 55 }),
+                    withTiming(1, { duration: 75 }),
+                );
+                schedule();
+            }, delay);
+        };
+        schedule();
+        return () => { if (blinkTimer.current) clearTimeout(blinkTimer.current); };
+    }, []);
+
+    // ── Dimensions ────────────────────────────────────────────────────────────
+    const cx       = size / 2;
+    const headR    = size * 0.36;
+    const eyeR     = size * 0.07;
+    const eyeOffX  = size * 0.11;
+    const eyeOffY  = size * 0.045;   // above center
+    const mouthW   = size * 0.20;
+    const mouthH   = size * 0.07;
+    const glowSize = headR * 2 + size * 0.18;
+
+    // ── Derived animated values (all read stateIdx.value in worklet) ──────────
+    const glowColor = useDerivedValue(() =>
+        interpolateColor(stateIdx.value, [0, 1, 2, 3], GLOW_COLORS)
+    );
+    const eyeColor = useDerivedValue(() =>
+        interpolateColor(stateIdx.value, [0, 1, 2, 3], EYE_COLORS)
+    );
+    const headColor = useDerivedValue(() =>
+        interpolateColor(stateIdx.value, [0, 1, 2, 3], HEAD_COLORS)
+    );
+
+    // Breathing scale — faster when speaking
+    const breathScale = useDerivedValue(() => {
+        'worklet';
+        const t = time.value;
+        const si = stateIdx.value;
+        if (si === 3) return 1 + Math.abs(Math.sin(t * 5.5)) * 0.022; // speaking: quick pulse
+        if (si === 1) return 1 + Math.abs(Math.sin(t * 2.5)) * 0.018; // listening: medium
+        return 1 + Math.sin(t * 0.8) * 0.016; // idle/thinking: slow breathe
+    });
+
+    // Vertical float
+    const floatY = useDerivedValue(() => {
+        'worklet';
+        const t = time.value;
+        const si = stateIdx.value;
+        if (si === 2) return Math.sin(t * 2.2) * size * 0.025; // thinking: faster bob
+        return Math.sin(t * 0.55) * size * 0.028;
+    });
+
+    // Horizontal tilt
+    const tiltZ = useDerivedValue(() => {
+        'worklet';
+        const t = time.value;
+        const si = stateIdx.value;
+        if (si === 1) return Math.sin(t * 1.1) * 0.12; // listening: nod
+        if (si === 2) return Math.sin(t * 0.4) * 0.10; // thinking: slow tilt
+        if (si === 3) return Math.sin(t * 1.4) * 0.07; // speaking: waggle
+        return Math.sin(t * 0.35) * 0.07 + Math.sin(t * 0.13) * 0.03; // idle: lazy
+    });
+
+    // Glow pulse opacity
+    const glowOpacity = useDerivedValue(() => {
+        'worklet';
+        const t = time.value;
+        const si = stateIdx.value;
+        const base = si === 0 ? 0.28 : 0.5;
+        const speed = si === 1 ? 2.2 : si === 3 ? 4.0 : 0.9;
+        return base + Math.abs(Math.sin(t * speed)) * 0.35;
+    });
+
+    // Thinking dot bounce offsets
+    const dot1Y = useDerivedValue(() => {
+        'worklet';
+        if (stateIdx.value !== 2) return 0;
+        return Math.sin(time.value * 4.0) * size * 0.045;
+    });
+    const dot2Y = useDerivedValue(() => {
+        'worklet';
+        if (stateIdx.value !== 2) return 0;
+        return Math.sin(time.value * 4.0 + 1.05) * size * 0.045;
+    });
+    const dot3Y = useDerivedValue(() => {
+        'worklet';
+        if (stateIdx.value !== 2) return 0;
+        return Math.sin(time.value * 4.0 + 2.1) * size * 0.045;
+    });
+
+    // Listening pulse ring scale
+    const listeningRingScale = useDerivedValue(() => {
+        'worklet';
+        if (stateIdx.value !== 1) return 1;
+        return 1 + Math.abs(Math.sin(time.value * 2.5)) * 0.08;
+    });
+    const listeningRingOpacity = useDerivedValue(() => {
+        'worklet';
+        if (stateIdx.value !== 1) return 0;
+        return 0.3 + Math.abs(Math.sin(time.value * 2.5)) * 0.5;
+    });
+
+    // ── Animated styles ───────────────────────────────────────────────────────
+    const headStyle = useAnimatedStyle(() => ({
+        backgroundColor: headColor.value,
+        transform: [
+            { translateY: floatY.value },
+            { rotateZ: `${tiltZ.value}rad` },
+            { scale: breathScale.value },
+        ],
+    }));
+
+    const glowStyle = useAnimatedStyle(() => ({
+        borderColor: glowColor.value,
+        shadowColor: glowColor.value,
+        opacity: glowOpacity.value,
+        transform: [
+            { translateY: floatY.value },
+            { scale: breathScale.value },
+        ],
+    }));
+
+    const leftEyeStyle = useAnimatedStyle(() => ({
+        backgroundColor: eyeColor.value,
+        shadowColor: eyeColor.value,
+        transform: [{ scaleY: blinkOpen.value }],
+    }));
+
+    const rightEyeStyle = useAnimatedStyle(() => ({
+        backgroundColor: eyeColor.value,
+        shadowColor: eyeColor.value,
+        transform: [{ scaleY: blinkOpen.value }],
+    }));
+
+    const mouthStyle = useAnimatedStyle(() => {
+        const open = mouthOpen.value;
+        const h = interpolate(open, [0, 1], [mouthH * 0.55, mouthH]);
+        const radius = interpolate(open, [0, 1], [mouthH * 0.5, mouthH * 0.3]);
+        return {
+            width: mouthW,
+            height: h,
+            borderRadius: radius,
+            borderTopLeftRadius: interpolate(open, [0, 1], [mouthH * 0.5, mouthH * 0.15]),
+            borderTopRightRadius: interpolate(open, [0, 1], [mouthH * 0.5, mouthH * 0.15]),
+        };
+    });
+
+    const dot1Style = useAnimatedStyle(() => ({ transform: [{ translateY: dot1Y.value }], opacity: stateIdx.value === 2 ? 1 : 0 }));
+    const dot2Style = useAnimatedStyle(() => ({ transform: [{ translateY: dot2Y.value }], opacity: stateIdx.value === 2 ? 1 : 0 }));
+    const dot3Style = useAnimatedStyle(() => ({ transform: [{ translateY: dot3Y.value }], opacity: stateIdx.value === 2 ? 1 : 0 }));
+
+    const listeningRingStyle = useAnimatedStyle(() => ({
+        opacity: listeningRingOpacity.value,
+        transform: [
+            { translateY: floatY.value },
+            { scale: listeningRingScale.value * breathScale.value },
+        ],
+    }));
+
+    const dotSize = size * 0.07;
 
     return (
-        <View style={[styles.container, { width: size, height: size }]}>
-            <GLView
-                style={{ width: size, height: size }}
-                onContextCreate={onContextCreate}
+        <View style={[s.root, { width: size, height: size }]}>
+
+            {/* Outer glow ring */}
+            <Animated.View
+                style={[
+                    s.glow,
+                    glowStyle,
+                    {
+                        width: glowSize,
+                        height: glowSize,
+                        borderRadius: glowSize / 2,
+                        left: cx - glowSize / 2,
+                        top: cx - glowSize / 2,
+                    },
+                ]}
             />
+
+            {/* Listening pulse ring */}
+            <Animated.View
+                style={[
+                    s.listeningRing,
+                    listeningRingStyle,
+                    {
+                        width: headR * 2 + size * 0.08,
+                        height: headR * 2 + size * 0.08,
+                        borderRadius: headR + size * 0.04,
+                        left: cx - headR - size * 0.04,
+                        top: cx - headR - size * 0.04,
+                        borderColor: EYE_COLORS[1],
+                    },
+                ]}
+            />
+
+            {/* Head */}
+            <Animated.View
+                style={[
+                    s.head,
+                    headStyle,
+                    {
+                        width: headR * 2,
+                        height: headR * 2,
+                        borderRadius: headR,
+                        left: cx - headR,
+                        top: cx - headR,
+                    },
+                ]}
+            >
+                {/* Left eye */}
+                <Animated.View
+                    style={[
+                        s.eye,
+                        leftEyeStyle,
+                        {
+                            width: eyeR * 2,
+                            height: eyeR * 2,
+                            borderRadius: eyeR,
+                            left: headR - eyeOffX - eyeR,
+                            top: headR - eyeOffY - eyeR,
+                        },
+                    ]}
+                />
+
+                {/* Right eye */}
+                <Animated.View
+                    style={[
+                        s.eye,
+                        rightEyeStyle,
+                        {
+                            width: eyeR * 2,
+                            height: eyeR * 2,
+                            borderRadius: eyeR,
+                            left: headR + eyeOffX - eyeR,
+                            top: headR - eyeOffY - eyeR,
+                        },
+                    ]}
+                />
+
+                {/* Mouth */}
+                <Animated.View
+                    style={[
+                        s.mouth,
+                        mouthStyle,
+                        {
+                            left: headR - mouthW / 2,
+                            top: headR + eyeOffY + eyeR * 2 + size * 0.03,
+                        },
+                    ]}
+                />
+
+                {/* Thinking dots — replace mouth area when thinking */}
+                <View
+                    style={[
+                        s.thinkRow,
+                        {
+                            left: 0, right: 0,
+                            bottom: headR * 0.22,
+                        },
+                    ]}
+                >
+                    <Animated.View style={[s.thinkDot, dot1Style, { width: dotSize, height: dotSize, borderRadius: dotSize / 2 }]} />
+                    <Animated.View style={[s.thinkDot, dot2Style, { width: dotSize, height: dotSize, borderRadius: dotSize / 2 }]} />
+                    <Animated.View style={[s.thinkDot, dot3Style, { width: dotSize, height: dotSize, borderRadius: dotSize / 2 }]} />
+                </View>
+            </Animated.View>
         </View>
     );
 }
 
-const styles = StyleSheet.create({
-    container: {
-        borderRadius: 999,
+const s = StyleSheet.create({
+    root: {
+        position: 'relative',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'visible',
+    },
+    glow: {
+        position: 'absolute',
+        borderWidth: 1.5,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 1,
+        shadowRadius: 22,
+        elevation: 0,
+    },
+    listeningRing: {
+        position: 'absolute',
+        borderWidth: 2,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.8,
+        shadowRadius: 10,
+        elevation: 0,
+    },
+    head: {
+        position: 'absolute',
+        borderWidth: 0,
+        shadowColor: '#0a2a4a',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.6,
+        shadowRadius: 12,
+        elevation: 8,
+    },
+    eye: {
+        position: 'absolute',
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 1,
+        shadowRadius: 8,
+        elevation: 4,
+    },
+    mouth: {
+        position: 'absolute',
+        backgroundColor: '#1a3a5a',
         overflow: 'hidden',
     },
+    thinkRow: {
+        position: 'absolute',
+        flexDirection: 'row',
+        justifyContent: 'center',
+        alignItems: 'flex-end',
+        gap: 5,
+    },
+    thinkDot: {
+        backgroundColor: '#bb55ff',
+        shadowColor: '#bb55ff',
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.9,
+        shadowRadius: 5,
+        elevation: 3,
+    },
 });
+
