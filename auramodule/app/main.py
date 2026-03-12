@@ -1,4 +1,4 @@
-
+﻿
 import asyncio
 import logging
 import os
@@ -228,10 +228,10 @@ def check_pip():
         )
         if result.returncode == 0:
             current_version = result.stdout.strip().split()[1]
-            print_status("●", f"pip installed: {CYAN}{current_version}{RESET}")
+            print_status("â—", f"pip installed: {CYAN}{current_version}{RESET}")
             return True
     except Exception as e:
-        print_status("●", f"pip check failed: {e}", YELLOW)
+        print_status("â—", f"pip check failed: {e}", YELLOW)
     return False
 
 
@@ -264,10 +264,10 @@ def show_banner(system_info: Dict[str, Any] = None):
         pi_info = f" [Raspberry Pi {model}{gpu}]"
     
     print(f"""
-{CYAN}{BOLD}╔═══════════════════════════════════════════════════════════╗
-║          A . U . R . A    M O D U L E   2026{pi_info}          ║
-║                   IoT Device Hub                             ║
-╚═══════════════════════════════════════════════════════════╝{RESET}
+{CYAN}{BOLD}â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—
+â•‘          A . U . R . A    M O D U L E   2026{pi_info}          â•‘
+â•‘                   IoT Device Hub                             â•‘
+â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•{RESET}
     """)
 
 
@@ -278,7 +278,7 @@ def print_status(icon, text, color=GREEN):
 
 #------This Function prints section-------
 def print_section(title):
-    print(f"\n{BLUE}{BOLD}── {title} ──{RESET}\n")
+    print(f"\n{BLUE}{BOLD}â”€â”€ {title} â”€â”€{RESET}\n")
 
 
 #------This Function checks if patient UID is configured---------
@@ -340,7 +340,7 @@ def prompt_ollama_model_selection(installed_models: List[str]) -> Optional[str]:
 
     print_section("Ollama Model Selection")
     if installed_models:
-        print_status("●", "Installed models detected:", CYAN)
+        print_status("â—", "Installed models detected:", CYAN)
         for idx, model in enumerate(installed_models, start=1):
             print(f"  {idx}. {model}")
         print(f"  n. Pull new model from Ollama")
@@ -378,48 +378,48 @@ def check_pyaudio():
     auto_install = os.environ.get("AUTO_INSTALL_DEPS", "false").lower() == "true"
     
     if not auto_install:
-        print_status("●", "PyAudio not found - auto-install disabled", YELLOW)
-        print(f"  {CYAN}→{RESET} To enable, run with: AUTO_INSTALL_DEPS=true python -m app.main")
+        print_status("â—", "PyAudio not found - auto-install disabled", YELLOW)
+        print(f"  {CYAN}â†’{RESET} To enable, run with: AUTO_INSTALL_DEPS=true python -m app.main")
         return False
     
     try:
         import pyaudio
-        print_status("●", f"PyAudio installed")
+        print_status("â—", f"PyAudio installed")
         return True
     except ImportError:
         pass
     
-    print(f"  {CYAN}→{RESET} Installing PyAudio...")
+    print(f"  {CYAN}â†’{RESET} Installing PyAudio...")
     
     try:
         if sys.platform == "darwin":
             subprocess.run(["brew", "install", "portaudio"], check=True, timeout=300)
         elif sys.platform == "linux":
             if Path("/etc/arch-release").exists():
-                print(f"  {BLUE}›{RESET} Detected Arch Linux")
+                print(f"  {BLUE}â€º{RESET} Detected Arch Linux")
                 subprocess.run(["sudo", "pacman", "-S", "--noconfirm", "portaudio"], check=False, timeout=300)
             elif Path("/etc/fedora-release").exists():
-                print(f"  {BLUE}›{RESET} Detected Fedora")
+                print(f"  {BLUE}â€º{RESET} Detected Fedora")
                 subprocess.run(["sudo", "dnf", "install", "-y", "portaudio-devel"], check=False, timeout=300)
             elif Path("/etc/debian_version").exists() or Path("/etc/ubuntu_version").exists():
-                print(f"  {BLUE}›{RESET} Detected Debian/Ubuntu")
+                print(f"  {BLUE}â€º{RESET} Detected Debian/Ubuntu")
                 subprocess.run(["sudo", "apt-get", "install", "-y", "portaudio19-dev"], check=False, timeout=300)
             else:
-                print(f"  {BLUE}›{RESET} Unknown distro, trying pip...")
+                print(f"  {BLUE}â€º{RESET} Unknown distro, trying pip...")
         
         subprocess.run([sys.executable, "-m", "pip", "install", "pyaudio"], check=True, timeout=300)
-        print_status("●", "PyAudio installed successfully")
+        print_status("â—", "PyAudio installed successfully")
         return True
         
     except Exception as e:
-        print_status("●", f"PyAudio installation failed: {e}", RED)
+        print_status("â—", f"PyAudio installation failed: {e}", RED)
         print(f"  {RED}!{RESET} Microphone will run in demo mode")
         return False
 
 
 #------This Function streams ollama pull with progress----------
 def stream_ollama_pull(model_name: str, timeout: int = 600) -> bool:
-    print(f"  {CYAN}→{RESET} Downloading {model_name}...")
+    print(f"  {CYAN}â†’{RESET} Downloading {model_name}...")
     
     try:
         process = subprocess.Popen(
@@ -461,8 +461,8 @@ def stream_ollama_pull(model_name: str, timeout: int = 600) -> bool:
                 msg = "Pulling manifest..."
                 if msg != last_message:
                     if last_message and last_count > 1:
-                        print(f"  {BLUE}›{RESET} {last_message}(x{last_count})")
-                    print(f"  {BLUE}›{RESET} {msg}")
+                        print(f"  {BLUE}â€º{RESET} {last_message}(x{last_count})")
+                    print(f"  {BLUE}â€º{RESET} {msg}")
                     last_message = msg
                     last_count = 1
                 else:
@@ -500,8 +500,8 @@ def stream_ollama_pull(model_name: str, timeout: int = 600) -> bool:
                 msg = "Verifying checksum..."
                 if msg != last_message:
                     if last_message and last_count > 1:
-                        print(f"  {BLUE}›{RESET} {last_message}(x{last_count})")
-                    print(f"  {BLUE}›{RESET} {msg}")
+                        print(f"  {BLUE}â€º{RESET} {last_message}(x{last_count})")
+                    print(f"  {BLUE}â€º{RESET} {msg}")
                     last_message = msg
                     last_count = 1
                 else:
@@ -510,21 +510,21 @@ def stream_ollama_pull(model_name: str, timeout: int = 600) -> bool:
                 msg = "Writing to model storage..."
                 if msg != last_message:
                     if last_message and last_count > 1:
-                        print(f"  {BLUE}›{RESET} {last_message}(x{last_count})")
-                    print(f"  {BLUE}›{RESET} {msg}")
+                        print(f"  {BLUE}â€º{RESET} {last_message}(x{last_count})")
+                    print(f"  {BLUE}â€º{RESET} {msg}")
                     last_message = msg
                     last_count = 1
                 else:
                     last_count += 1
         
         if last_message and last_count > 1:
-            print(f"  {BLUE}›{RESET} {last_message}(x{last_count})")
+            print(f"  {BLUE}â€º{RESET} {last_message}(x{last_count})")
             
         retcode = process.wait(timeout=timeout)
         print()  
         
         if retcode == 0:
-            print_status("●", f"{model_name} downloaded successfully")
+            print_status("â—", f"{model_name} downloaded successfully")
             return True
         return False
         
@@ -540,7 +540,7 @@ def pull_model_with_progress(model_name: str) -> bool:
 
 #------This Function updates Ollama model automatically----------
 def update_ollama_model(model_name: str) -> bool:
-    print(f"  {CYAN}→{RESET} Updating {model_name}...")
+    print(f"  {CYAN}â†’{RESET} Updating {model_name}...")
     
     try:
         process = subprocess.Popen(
@@ -555,18 +555,18 @@ def update_ollama_model(model_name: str) -> bool:
         for line in process.stdout:
             line = line.strip()
             if "already up to date" in line.lower():
-                print_status("●", f"{model_name} is up to date")
+                print_status("â—", f"{model_name} is up to date")
                 process.terminate()
                 return True
             elif "downloading" in line.lower():
                 elapsed = time.time() - start_time
-                print(f"\r  {CYAN}▓{RESET} Downloading... {elapsed:.1f}s    ", end="", flush=True)
+                print(f"\r  {CYAN}â–“{RESET} Downloading... {elapsed:.1f}s    ", end="", flush=True)
         
         process.wait()
         print()
         
         if process.returncode == 0:
-            print_status("●", f"{model_name} updated successfully")
+            print_status("â—", f"{model_name} updated successfully")
             return True
         return False
         
@@ -591,22 +591,22 @@ def check_ollama():
             timeout=5,
         )
         if result.returncode == 0:
-            print_status("●", f"Ollama installed: {CYAN}{result.stdout.strip()}{RESET}")
+            print_status("â—", f"Ollama installed: {CYAN}{result.stdout.strip()}{RESET}")
 
             installed_models = get_installed_ollama_models()
             if settings.ollama_model in installed_models:
-                print_status("●", f"{settings.ollama_model} model installed")
+                print_status("â—", f"{settings.ollama_model} model installed")
                 if not auto_install:
-                    print_status("●", "Auto model updates disabled (AUTO_INSTALL_DEPS=false)", YELLOW)
+                    print_status("â—", "Auto model updates disabled (AUTO_INSTALL_DEPS=false)", YELLOW)
                 else:
                     if settings.auto_update_models:
-                        print(f"\n  {BLUE}›{RESET} Checking for model updates...")
+                        print(f"\n  {BLUE}â€º{RESET} Checking for model updates...")
                         if update_ollama_model(settings.ollama_model):
-                            print_status("●", f"{settings.ollama_model} is up to date")
+                            print_status("â—", f"{settings.ollama_model} is up to date")
                 return True
 
             print_status(
-                "●",
+                "â—",
                 f"Configured model '{settings.ollama_model}' is not installed",
                 YELLOW,
             )
@@ -615,12 +615,12 @@ def check_ollama():
                     selected_model = prompt_ollama_model_selection(installed_models)
                     if selected_model:
                         settings.ollama_model = selected_model
-                        print_status("●", f"Using model: {CYAN}{settings.ollama_model}{RESET}")
+                        print_status("â—", f"Using model: {CYAN}{settings.ollama_model}{RESET}")
                         return True
-                print_status("●", "No model selected. Orito features may be unavailable", YELLOW)
+                print_status("â—", "No model selected. Orito features may be unavailable", YELLOW)
                 return False
 
-            print(f"\n  {BLUE}›{RESET} Checking {settings.ollama_model} model...")
+            print(f"\n  {BLUE}â€º{RESET} Checking {settings.ollama_model} model...")
             model_result = subprocess.run(
                 ["ollama", "list"],
                 capture_output=True,
@@ -631,20 +631,20 @@ def check_ollama():
             model_found = settings.ollama_model.split(":")[0] in model_result.stdout
             
             if model_found:
-                print_status("●", f"{settings.ollama_model} model installed")
+                print_status("â—", f"{settings.ollama_model} model installed")
                 
                 if settings.auto_update_models:
-                    print(f"\n  {BLUE}›{RESET} Checking for model updates...")
+                    print(f"\n  {BLUE}â€º{RESET} Checking for model updates...")
                     if update_ollama_model(settings.ollama_model):
-                        print_status("●", f"{settings.ollama_model} is up to date")
+                        print_status("â—", f"{settings.ollama_model} is up to date")
             else:
-                print_status("●", f"{settings.ollama_model} model not found", YELLOW)
-                print(f"  {CYAN}→{RESET} Pulling {settings.ollama_model} model...")
+                print_status("â—", f"{settings.ollama_model} model not found", YELLOW)
+                print(f"  {CYAN}â†’{RESET} Pulling {settings.ollama_model} model...")
                 
                 if pull_model_with_progress(settings.ollama_model):
-                    print_status("●", f"{settings.ollama_model} model downloaded successfully")
+                    print_status("â—", f"{settings.ollama_model} model downloaded successfully")
                 else:
-                    print_status("●", "Failed to pull model", RED)
+                    print_status("â—", "Failed to pull model", RED)
                     return False
             
             return True
@@ -652,18 +652,18 @@ def check_ollama():
     except FileNotFoundError:
         pass
     except subprocess.TimeoutExpired:
-        print_status("●", "Ollama check timed out", RED)
+        print_status("â—", "Ollama check timed out", RED)
         return False
     except Exception as e:
-        print_status("●", f"Error checking Ollama: {e}", RED)
+        print_status("â—", f"Error checking Ollama: {e}", RED)
         return False
     
-    print_status("●", "Ollama not installed", YELLOW)
+    print_status("â—", "Ollama not installed", YELLOW)
     if not auto_install:
-        print_status("●", "Auto-install disabled (AUTO_INSTALL_DEPS=false)", YELLOW)
-        print(f"  {CYAN}→{RESET} Install manually or run once with AUTO_INSTALL_DEPS=true")
+        print_status("â—", "Auto-install disabled (AUTO_INSTALL_DEPS=false)", YELLOW)
+        print(f"  {CYAN}â†’{RESET} Install manually or run once with AUTO_INSTALL_DEPS=true")
         return False
-    print(f"  {CYAN}→{RESET} Installing Ollama...")
+    print(f"  {CYAN}â†’{RESET} Installing Ollama...")
     
     max_retries = 3
     retry_count = 0
@@ -680,38 +680,38 @@ def check_ollama():
             )
             
             if install_result.returncode != 0:
-                print_status("●", f"Ollama installation failed", RED)
+                print_status("â—", f"Ollama installation failed", RED)
                 print(f"  {RED}!{RESET} {install_result.stderr}")
                 retry_count += 1
                 if retry_count < max_retries:
-                    print(f"  {YELLOW}→{RESET} Retrying in 5 seconds... ({retry_count}/{max_retries})")
+                    print(f"  {YELLOW}â†’{RESET} Retrying in 5 seconds... ({retry_count}/{max_retries})")
                     time.sleep(5)
                     continue
                 return False
             
-            print_status("●", "Ollama installed successfully")
+            print_status("â—", "Ollama installed successfully")
             
-            print(f"\n  {BLUE}›{RESET} Pulling {settings.ollama_model} model...")
+            print(f"\n  {BLUE}â€º{RESET} Pulling {settings.ollama_model} model...")
             if pull_model_with_progress(settings.ollama_model):
-                print_status("●", f"{settings.ollama_model} model downloaded successfully")
+                print_status("â—", f"{settings.ollama_model} model downloaded successfully")
             else:
-                print_status("●", "Model pull failed - will retry on first use", YELLOW)
+                print_status("â—", "Model pull failed - will retry on first use", YELLOW)
             
             return True
             
         except subprocess.TimeoutExpired:
-            print_status("●", "Ollama installation timed out", RED)
+            print_status("â—", "Ollama installation timed out", RED)
             retry_count += 1
             if retry_count < max_retries:
-                print(f"  {YELLOW}→{RESET} Retrying in 10 seconds... ({retry_count}/{max_retries})")
+                print(f"  {YELLOW}â†’{RESET} Retrying in 10 seconds... ({retry_count}/{max_retries})")
                 time.sleep(10)
                 continue
             return False
         except Exception as e:
-            print_status("●", f"Installation error: {e}", RED)
+            print_status("â—", f"Installation error: {e}", RED)
             retry_count += 1
             if retry_count < max_retries:
-                print(f"  {YELLOW}→{RESET} Retrying in 5 seconds... ({retry_count}/{max_retries})")
+                print(f"  {YELLOW}â†’{RESET} Retrying in 5 seconds... ({retry_count}/{max_retries})")
                 time.sleep(5)
                 continue
             return False
@@ -725,26 +725,26 @@ def check_models() -> bool:
     auto_install = os.environ.get("AUTO_INSTALL_DEPS", "false").lower() == "true"
     
     if not auto_install:
-        print_status("●", "InsightFace not found - auto-install disabled", YELLOW)
-        print(f"  {CYAN}→{RESET} To enable, run with: AUTO_INSTALL_DEPS=true python -m app.main")
+        print_status("â—", "InsightFace not found - auto-install disabled", YELLOW)
+        print(f"  {CYAN}â†’{RESET} To enable, run with: AUTO_INSTALL_DEPS=true python -m app.main")
         return False
     
-    print(f"  {BLUE}›{RESET} Checking InsightFace/buffalo_l...")
+    print(f"  {BLUE}â€º{RESET} Checking InsightFace/buffalo_l...")
     
     try:
         import insightface
         from insightface.app import FaceAnalysis
         
-        print(f"  {CYAN}→{RESET} Initializing buffalo_l model (first run may download weights)...")
+        print(f"  {CYAN}â†’{RESET} Initializing buffalo_l model (first run may download weights)...")
         app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
         app.prepare(ctx_id=0, det_size=(640, 640))
-        print_status("●", "buffalo_l face recognition model ready")
+        print_status("â—", "buffalo_l face recognition model ready")
         return True
         
     except ImportError:
-        print_status("●", "InsightFace not installed", YELLOW)
+        print_status("â—", "InsightFace not installed", YELLOW)
         
-        print(f"  {CYAN}→{RESET} Installing InsightFace and dependencies...")
+        print(f"  {CYAN}â†’{RESET} Installing InsightFace and dependencies...")
         
         try:
             subprocess.run(
@@ -752,24 +752,24 @@ def check_models() -> bool:
                 check=True,
                 timeout=300,
             )
-            print_status("●", "InsightFace installed successfully")
+            print_status("â—", "InsightFace installed successfully")
             
-            print(f"  {CYAN}→{RESET} Initializing buffalo_l model...")
+            print(f"  {CYAN}â†’{RESET} Initializing buffalo_l model...")
             from insightface.app import FaceAnalysis
             app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
             app.prepare(ctx_id=0, det_size=(640, 640))
-            print_status("●", "buffalo_l face recognition model ready")
+            print_status("â—", "buffalo_l face recognition model ready")
             return True
             
         except Exception as e:
-            print_status("●", f"InsightFace installation failed: {e}", RED)
+            print_status("â—", f"InsightFace installation failed: {e}", RED)
             print(f"  {RED}!{RESET} Face recognition will be disabled")
             return False
         
     except Exception as e:
-        print_status("●", f"Model not ready: {e}", YELLOW)
+        print_status("â—", f"Model not ready: {e}", YELLOW)
         
-        print(f"  {CYAN}→{RESET} Attempting to reinstall and setup...")
+        print(f"  {CYAN}â†’{RESET} Attempting to reinstall and setup...")
         
         try:
             subprocess.run(
@@ -777,14 +777,14 @@ def check_models() -> bool:
                 check=True,
                 timeout=300,
             )
-            print(f"  {CYAN}→{RESET} Reinitializing buffalo_l model...")
+            print(f"  {CYAN}â†’{RESET} Reinitializing buffalo_l model...")
             from insightface.app import FaceAnalysis
             app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
             app.prepare(ctx_id=0, det_size=(640, 640))
-            print_status("●", "buffalo_l face recognition model ready")
+            print_status("â—", "buffalo_l face recognition model ready")
             return True
         except Exception as e2:
-            print_status("●", f"Setup failed: {e2}", RED)
+            print_status("â—", f"Setup failed: {e2}", RED)
             print(f"  {RED}!{RESET} Face recognition will be disabled")
             return False
 
@@ -865,7 +865,7 @@ def check_for_updates() -> bool:
 #------This Function restarts the module to apply updates-------
 def _restart_after_update() -> None:
     if not AUTO_RESTART_ON_UPDATE:
-        print_status("●", "Updates pulled. Restart the module to apply changes.", YELLOW)
+        print_status("â—", "Updates pulled. Restart the module to apply changes.", YELLOW)
         logging.getLogger(__name__).warning("[UPDATE] Auto-restart disabled; manual restart required")
         return
 
@@ -877,7 +877,7 @@ def _restart_after_update() -> None:
 #------This Function pulls git updates-------
 def pull_updates() -> bool:
     if not _is_work_tree_clean():
-        print_status("●", "Local changes detected; skipping auto-update pull", YELLOW)
+        print_status("â—", "Local changes detected; skipping auto-update pull", YELLOW)
         logging.getLogger(__name__).warning("[UPDATE] Working tree is dirty; pull skipped")
         return False
 
@@ -886,11 +886,11 @@ def pull_updates() -> bool:
         return False
 
     if pull_result.returncode == 0:
-        print_status("●", "Updates applied successfully")
+        print_status("â—", "Updates applied successfully")
         return True
 
     error_text = pull_result.stderr.strip() or pull_result.stdout.strip() or "unknown pull error"
-    print_status("●", f"Update failed: {error_text}", RED)
+    print_status("â—", f"Update failed: {error_text}", RED)
     logging.getLogger(__name__).error("[UPDATE] git pull failed: %s", error_text)
     return False
 
@@ -910,8 +910,8 @@ def update_monitor() -> None:
                     if not check_for_updates():
                         continue
 
-                    print(f"\n\n{YELLOW}{BOLD}═══ UPDATE AVAILABLE ═══{RESET}")
-                    print_status("●", "New commits detected - updating...")
+                    print(f"\n\n{YELLOW}{BOLD}â•â•â• UPDATE AVAILABLE â•â•â•{RESET}")
+                    print_status("â—", "New commits detected - updating...")
                     if pull_updates():
                         _restart_after_update()
                 finally:
@@ -959,6 +959,12 @@ def stop_update_monitor() -> None:
 #------This Function handles the Main Application----------
 async def main():
     global _system_info
+
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     
     _system_info = detect_hardware()
     show_banner(_system_info)
@@ -966,26 +972,26 @@ async def main():
     print(f"{CYAN}Initializing system checks...{RESET}\n")
     
     print_section("System Information")
-    print_status("●", f"Platform: {CYAN}{_system_info['platform']}{RESET}")
-    print_status("●", f"Architecture: {CYAN}{_system_info['architecture']}{RESET}")
-    print_status("●", f"CPU Cores: {CYAN}{_system_info['cpu_cores']}{RESET}")
+    print_status("â—", f"Platform: {CYAN}{_system_info['platform']}{RESET}")
+    print_status("â—", f"Architecture: {CYAN}{_system_info['architecture']}{RESET}")
+    print_status("â—", f"CPU Cores: {CYAN}{_system_info['cpu_cores']}{RESET}")
     
     if _system_info.get("is_raspberry_pi"):
-        print_status("●", f"Hardware: {CYAN}Raspberry Pi {_system_info['pi_model']}{RESET}")
-        print_status("●", f"GPU: {CYAN}{_system_info.get('gpu_info', 'None')}{RESET}")
+        print_status("â—", f"Hardware: {CYAN}Raspberry Pi {_system_info['pi_model']}{RESET}")
+        print_status("â—", f"GPU: {CYAN}{_system_info.get('gpu_info', 'None')}{RESET}")
     else:
-        print_status("●", f"Processor: {CYAN}{_system_info.get('processor', 'Unknown')[:50]}{RESET}")
-        print_status("●", f"GPU: {CYAN}{_system_info.get('gpu_info', 'None')}{RESET}")
+        print_status("â—", f"Processor: {CYAN}{_system_info.get('processor', 'Unknown')[:50]}{RESET}")
+        print_status("â—", f"GPU: {CYAN}{_system_info.get('gpu_info', 'None')}{RESET}")
     
     print()
     resources = check_system_resources()
     print_section("System Resources")
-    print_status("●", f"Disk Space: {CYAN}{resources['disk_space_gb']} GB{RESET}")
-    print_status("●", f"Memory: {CYAN}{resources['memory_available_gb']} GB available / {resources['memory_total_gb']} GB total{RESET}")
-    print_status("●", f"CPU Usage: {CYAN}{resources['cpu_usage_percent']}%{RESET}")
+    print_status("â—", f"Disk Space: {CYAN}{resources['disk_space_gb']} GB{RESET}")
+    print_status("â—", f"Memory: {CYAN}{resources['memory_available_gb']} GB available / {resources['memory_total_gb']} GB total{RESET}")
+    print_status("â—", f"CPU Usage: {CYAN}{resources['cpu_usage_percent']}%{RESET}")
     
     if not resources["ok"]:
-        print_status("●", "Low disk space! At least 2GB recommended", YELLOW)
+        print_status("â—", "Low disk space! At least 2GB recommended", YELLOW)
     
     check_pyaudio()
     ollama_ok = check_ollama()
@@ -1008,40 +1014,60 @@ async def main():
     
     backend_url = settings.backend_url
     patient_uid = settings.patient_uid
+    auth_token = (settings.backend_auth_token or "").strip()
     
     if backend_url and backend_url != "http://localhost:8000":
-        print_status("●", f"BACKEND_URL: {CYAN}{backend_url}{RESET}")
+        print_status("â—", f"BACKEND_URL: {CYAN}{backend_url}{RESET}")
     else:
-        print_status("●", "BACKEND_URL not configured", RED)
+        print_status("â—", "BACKEND_URL not configured", RED)
     
     if is_configured_patient_uid(patient_uid) and pairing_completed:
-        print_status("●", f"PATIENT_UID: {CYAN}{patient_uid[:8]}...{RESET}")
+        print_status("â—", f"PATIENT_UID: {CYAN}{patient_uid[:8]}...{RESET}")
     else:
-        print_status("●", "PATIENT_UID not configured", RED)
-        print_status("●", "Waiting for paired device to provide patient UID", YELLOW)
+        print_status("â—", "PATIENT_UID not configured", RED)
+        print_status("â—", "Waiting for paired device to provide patient UID", YELLOW)
     
-    print(f"\n{BLUE}{BOLD}════════════════════════════════════{RESET}")
+    if auth_token:
+        print_status("â—", "BACKEND_AUTH_TOKEN present")
+    else:
+        print_status("â—", "BACKEND_AUTH_TOKEN missing", YELLOW)
+
+    print(f"\n{BLUE}{BOLD}â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•{RESET}")
     print(f"{BLUE}{BOLD}  Status Summary{RESET}")
-    print(f"{BLUE}{BOLD}════════════════════════════════════{RESET}")
+    print(f"{BLUE}{BOLD}â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•{RESET}")
     
-    print_status("●", "Environment")
-    print_status("●" if ollama_ok else "●", "Ollama + Models", GREEN if ollama_ok else YELLOW)
+    print_status("â—", "Environment")
+    print_status("â—" if ollama_ok else "â—", "Ollama + Models", GREEN if ollama_ok else YELLOW)
     
     setup_logging()
     logger = logging.getLogger(__name__)
 
+    logger.info("[AURA] Startup diagnostics")
+    logger.info("Backend URL: %s", settings.backend_url or "")
+    logger.info(
+        "Patient UID: %s",
+        "configured" if is_configured_patient_uid(settings.patient_uid) else "NOT CONFIGURED",
+    )
+    logger.info(
+        "Auth token: %s",
+        "present" if (settings.backend_auth_token or "").strip() else "missing",
+    )
+
     if start_update_monitor():
-        print_status("●", "Update monitor running in background")
+        print_status("â—", "Update monitor running in background")
     else:
-        print_status("●", "Update monitor disabled", YELLOW)
+        print_status("â—", "Update monitor disabled", YELLOW)
+
+    if not is_configured_patient_uid(settings.patient_uid):
+        logger.warning("Device running in unpaired mode. Backend registration will be skipped.")
 
     if not runtime_config_ready:
         logger.warning(
             "[AURA] Starting in unpaired mode. "
             "Connect from paired app to push patient_uid and backend_url."
         )
-        print_status("●", "Running in unpaired mode", YELLOW)
-        print_status("●", "Backend registration will wait until pairing is completed", YELLOW)
+        print_status("â—", "Running in unpaired mode", YELLOW)
+        print_status("â—", "Backend registration will wait until pairing is completed", YELLOW)
 
     preferred_port = settings.http_port
     resolved_port = resolve_available_service_port(preferred_port)
@@ -1053,24 +1079,24 @@ async def main():
         )
         settings.http_port = resolved_port
         settings.ws_port = resolved_port
-        print_status("●", f"Port {preferred_port} busy, using {resolved_port}", YELLOW)
+        print_status("â—", f"Port {preferred_port} busy, using {resolved_port}", YELLOW)
     
     print_section("Starting Services")
     
     print_status(
-        "●",
+        "â—",
         f"Patient UID: {settings.patient_uid[:8]}..."
         if is_configured_patient_uid(settings.patient_uid)
         else "Patient UID: NOT SET (awaiting pairing)",
     )
-    print_status("●", f"Server port: {settings.http_port}")
-    print_status("●", f"Camera index: {settings.camera_index}")
-    print_status("●", f"Whisper model: {settings.whisper_model} ({settings.whisper_model_size})")
-    print_status("●", f"Ollama: {settings.ollama_url} ({settings.ollama_model})")
-    print_status("●", f"Streaming: {settings.ollama_streaming}")
-    print_status("●", f"VAD: {settings.enable_vad}")
-    print_status("●", f"Backend: {settings.backend_url}")
-    print_status("●", f"Demo mode: {settings.demo_mode}")
+    print_status("â—", f"Server port: {settings.http_port}")
+    print_status("â—", f"Camera index: {settings.camera_index}")
+    print_status("â—", f"Whisper model: {settings.whisper_model} ({settings.whisper_model_size})")
+    print_status("â—", f"Ollama: {settings.ollama_url} ({settings.ollama_model})")
+    print_status("â—", f"Streaming: {settings.ollama_streaming}")
+    print_status("â—", f"VAD: {settings.enable_vad}")
+    print_status("â—", f"Backend: {settings.backend_url}")
+    print_status("â—", f"Demo mode: {settings.demo_mode}")
     print()
     
     logger.info("[AURA] Pre-loading machine learning models...")
@@ -1082,7 +1108,7 @@ async def main():
 
         logger.info("[AURA] Loading face recognition model (buffalo_l)...")
         get_face_app()
-        print_status("●", "Face recognition model ready")
+        print_status("â—", "Face recognition model ready")
     except Exception as e:
         logger.error(f"[AURA] Failed to load face recognition model: {e}")
         logger.error(
@@ -1102,7 +1128,7 @@ async def main():
 
         logger.info("[AURA] Preloading Whisper STT model...")
         get_whisper_model()
-        print_status("●", "Whisper STT model ready")
+        print_status("â—", "Whisper STT model ready")
     except Exception as e:
         logger.error(f"[AURA] Failed to preload Whisper model: {e}")
         logger.warning("[AURA] Continuing; live transcription may be delayed on first decode")
@@ -1114,22 +1140,22 @@ async def main():
 
     if runtime_config_ready:
         logger.info(f"[AURA] Registering with backend at {settings.backend_url}...")
-        print_status("●", f"Registering with backend at {settings.backend_url}...")
+        print_status("â—", f"Registering with backend at {settings.backend_url}...")
         registered = await backend_client.register(local_ip, settings.http_port)
         
         if not registered:
             logger.warning("[AURA] Failed to register with backend")
-            print_status("●", "Failed to register with backend", YELLOW)
+            print_status("â—", "Failed to register with backend", YELLOW)
             print(f"  {YELLOW}!{RESET} Module will continue running but some features may not work")
         else:
             await backend_client.start_heartbeat()
-            print_status("●", f"Heartbeat task started (every {settings.heartbeat_interval}s)")
+            print_status("â—", f"Heartbeat task started (every {settings.heartbeat_interval}s)")
     else:
         logger.info("[AURA] Backend registration deferred until pairing config is received")
-        print_status("●", "Backend registration deferred until pairing", YELLOW)
+        print_status("â—", "Backend registration deferred until pairing", YELLOW)
 
     camera_service.start()
-    print_status("●", "Camera started (always-on mode)")
+    print_status("â—", "Camera started (always-on mode)")
 
     async def on_summarize(transcripts):
         if not is_configured_patient_uid(settings.patient_uid):
@@ -1155,17 +1181,17 @@ async def main():
     )
     continuous_microphone.start()
     print_status(
-        "●",
+        "â—",
         f"Continuous microphone started ({settings.continuous_summary_interval_minutes}-minute summarization)",
     )
 
     discovery_service.start()
-    print_status("●", "mDNS discovery broadcasting")
+    print_status("â—", "mDNS discovery broadcasting")
 
     
     server_runner = await start_server()
-    print_status("●", f"Unified HTTP+WS server running on 0.0.0.0:{settings.http_port}")
-    print_status("●", f"Video stream available at: http://{local_ip}:{settings.http_port}/video_feed")
+    print_status("â—", f"Unified HTTP+WS server running on 0.0.0.0:{settings.http_port}")
+    print_status("â—", f"Video stream available at: http://{local_ip}:{settings.http_port}/video_feed")
 
     
     stop = asyncio.Event()
@@ -1174,13 +1200,17 @@ async def main():
     def signal_handler():
         logger.info("[AURA] Shutdown signal received")
         stop.set()
-    
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, signal_handler)
 
-    print(f"\n{BLUE}{BOLD}════════════════════════════════════{RESET}")
-    print_status("●", "Module ready. Waiting for connections...")
-    print(f"{BLUE}{BOLD}════════════════════════════════════{RESET}\n")
+    if platform.system() == "Windows":
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda _sig, _frame: signal_handler())
+    else:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, signal_handler)
+
+    print(f"\n{BLUE}{BOLD}â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•{RESET}")
+    print_status("â—", "Module ready. Waiting for connections...")
+    print(f"{BLUE}{BOLD}â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•{RESET}\n")
     
     await stop.wait()
 
@@ -1200,14 +1230,14 @@ async def main():
 
     await server_runner.cleanup()
     
-    print_status("●", "Goodbye")
+    print_status("â—", "Goodbye")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n" + BLUE + "»" + RESET + " Module stopped by user")
+        print("\n" + BLUE + "Â»" + RESET + " Module stopped by user")
     except Exception as e:
         logging.error(f"[AURA] Fatal error: {type(e).__name__}: {e}")
         sys.exit(1)
