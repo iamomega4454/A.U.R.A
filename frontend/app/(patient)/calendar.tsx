@@ -34,13 +34,16 @@ interface JournalEntry {
     created_at: string;
 }
 
-interface CustomTask {
+interface Reminder {
     id: string;
     title: string;
-    type: 'Medication' | 'Activity' | 'Reminder' | 'Custom';
-    time: string;
-    completed: boolean;
-    createdAt: string;
+    description: string;
+    datetime: string;
+    repeat_pattern: string | null;
+    status: string;
+    created_by: string;
+    source: string;
+    created_at: string;
 }
 
 type CalendarRoute = '/(patient)/calendar-medications' | '/(patient)/calendar-tasks' | '/(patient)/calendar-journal';
@@ -91,7 +94,7 @@ export default function CalendarScreen() {
 
     const [meds, setMeds] = useState<Med[]>([]);
     const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
-    const [customTasks, setCustomTasks] = useState<CustomTask[]>([]);
+    const [reminders, setReminders] = useState<Reminder[]>([]);
     const [steps, setSteps] = useState(0);
     const [loading, setLoading] = useState(true);
 
@@ -190,15 +193,19 @@ export default function CalendarScreen() {
         }
         setLoading(true);
         try {
-            const [medsRes, journalRes] = await Promise.allSettled([
+            const [medsRes, journalRes, remindersRes] = await Promise.allSettled([
                 api.get('/medications/'),
                 api.get('/journal/'),
+                api.get('/reminders/', { params: { status: 'all', limit: 200 } }),
             ]);
             if (medsRes.status === 'fulfilled') {
                 setMeds(medsRes.value.data || []);
             }
             if (journalRes.status === 'fulfilled') {
                 setJournalEntries(journalRes.value.data || []);
+            }
+            if (remindersRes.status === 'fulfilled') {
+                setReminders(remindersRes.value.data || []);
             }
         } catch (error) {
             console.error('[Calendar] failed to load overview data', error);
@@ -210,17 +217,10 @@ export default function CalendarScreen() {
     //------This Function handles the Load Local Data---------
     const loadLocalData = useCallback(async () => {
         try {
-            const [tasksRaw, stepsRaw] = await Promise.all([
-                AsyncStorage.getItem(`tasks_${dateKey}`),
-                AsyncStorage.getItem(`steps_${dateKey}`),
-            ]);
-
-            const parsedTasks = tasksRaw ? JSON.parse(tasksRaw) : [];
-            setCustomTasks(Array.isArray(parsedTasks) ? parsedTasks : []);
+            const stepsRaw = await AsyncStorage.getItem(`steps_${dateKey}`);
             setSteps(stepsRaw ? parseInt(stepsRaw, 10) : 0);
         } catch (error) {
             console.error('[Calendar] failed to load local overview data', error);
-            setCustomTasks([]);
             setSteps(0);
         }
     }, [dateKey]);
@@ -257,9 +257,16 @@ export default function CalendarScreen() {
         return journalEntries.filter((entry) => isSameDay(new Date(entry.created_at), selectedDate)).length;
     }, [journalEntries, selectedDate]);
 
-    const totalTasks = customTasks.length;
+    //------This Function filters reminders for selected date---------
+    function isReminderForDate(r: Reminder): boolean {
+        const dt = new Date(r.datetime);
+        return isSameDay(dt, selectedDate);
+    }
+
+    const dayReminders = useMemo(() => reminders.filter(isReminderForDate), [reminders, selectedDate]);
+    const totalTasks = dayReminders.length;
     //------This Function handles the Completed Tasks---------
-    const completedTasks = customTasks.filter((t) => t.completed).length;
+    const completedTasks = dayReminders.filter((r) => r.status === 'completed').length;
     const totalItems = activeMeds.length + totalTasks;
     const completedItems = medsTakenToday + completedTasks;
     const completionPct = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;

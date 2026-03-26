@@ -13,12 +13,24 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import Header from '../../src/components/Header';
 import Screen from '../../src/components/Screen';
+import api from '../../src/services/api';
 import { colors, fonts, spacing, radius } from '../../src/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { notificationService } from '../../src/services/notifications';
+
+interface Reminder {
+    id: string;
+    title: string;
+    description: string;
+    datetime: string;
+    repeat_pattern: string | null;
+    status: string;
+    created_by: string;
+    source: string;
+    created_at: string;
+}
 
 interface CustomTask {
     id: string;
@@ -103,17 +115,46 @@ export default function CalendarTasksScreen() {
     const [newTaskHour, setNewTaskHour] = useState('09');
     const [newTaskMinute, setNewTaskMinute] = useState('00');
 
+    //------This Function maps reminder type from source---------
+    function mapTaskType(source: string): CustomTask['type'] {
+        if (source === 'ai_generated') return 'Reminder';
+        return 'Custom';
+    }
+
+    //------This Function converts Reminder to CustomTask---------
+    function reminderToTask(r: Reminder): CustomTask {
+        const dt = new Date(r.datetime);
+        const time = `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+        return {
+            id: r.id,
+            title: r.title,
+            type: mapTaskType(r.source),
+            time,
+            completed: r.status === 'completed',
+            createdAt: r.created_at,
+        };
+    }
+
+    //------This Function filters reminders for selected date---------
+    function isReminderForDate(r: Reminder, targetDateKey: string): boolean {
+        const dt = new Date(r.datetime);
+        const reminderDateKey = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+        return reminderDateKey === targetDateKey;
+    }
+
     //------This Function handles the Load Tasks---------
     const loadTasks = useCallback(async () => {
         setLoading(true);
         try {
-            const raw = await AsyncStorage.getItem(`tasks_${dateKey}`);
-            const parsed = raw ? JSON.parse(raw) : [];
-            const safeTasks = Array.isArray(parsed) ? parsed : [];
-            safeTasks.sort((a, b) => toMinutes(a.time) - toMinutes(b.time));
-            setTasks(safeTasks);
+            const res = await api.get('/reminders/', { params: { status: 'all', limit: 200, _t: Date.now() } });
+            const reminders: Reminder[] = res.data || [];
+            const dayReminders = reminders.filter((r) => isReminderForDate(r, dateKey));
+            const mapped = dayReminders.map(reminderToTask);
+            mapped.sort((a, b) => toMinutes(a.time) - toMinutes(b.time));
+            setTasks(mapped);
         } catch (error) {
             console.error('[CalendarTasks] load failed', error);
+            Alert.alert('Error', 'Could not load tasks from server');
             setTasks([]);
         } finally {
             setLoading(false);
@@ -126,14 +167,6 @@ export default function CalendarTasksScreen() {
         }, [loadTasks])
     );
 
-    //------This Function handles the Persist---------
-    async function persist(nextTasks: CustomTask[]) {
-        //------This Function handles the Sorted---------
-        const sorted = [...nextTasks].sort((a, b) => toMinutes(a.time) - toMinutes(b.time));
-        setTasks(sorted);
-        await AsyncStorage.setItem(`tasks_${dateKey}`, JSON.stringify(sorted));
-    }
-
     //------This Function handles the Save Task---------
     async function saveTask() {
         if (!newTaskTitle.trim()) {
@@ -145,25 +178,41 @@ export default function CalendarTasksScreen() {
         const parsedMinute = clamp(parseInt(newTaskMinute || '0', 10) || 0, 0, 59);
         const normalizedTime = `${pad(parsedHour)}:${pad(parsedMinute)}`;
 
-        const task: CustomTask = {
-            id: Date.now().toString(),
-            title: newTaskTitle.trim(),
-            type: newTaskType,
-            time: normalizedTime,
-            completed: false,
-            createdAt: new Date().toISOString(),
-        };
+        const reminderDatetime = new Date(
+            selectedDate.getFullYear(),
+            selectedDate.getMonth(),
+            selectedDate.getDate(),
+            parsedHour,
+            parsedMinute,
+            0,
+            0,
+        );
 
         try {
-            await persist([...tasks, task]);
+            const res = await api.post('/reminders/', {
+                title: newTaskTitle.trim(),
+                description: '',
+                datetime: reminderDatetime.toISOString(),
+                repeat_pattern: null,
+                created_by: 'user',
+                source: 'manual',
+            });
+
+            const createdTask = reminderToTask(res.data);
+            setTasks((prev) => {
+                const next = [...prev, createdTask];
+                next.sort((a, b) => toMinutes(a.time) - toMinutes(b.time));
+                return next;
+            });
+
             setNewTaskTitle('');
             setNewTaskType('Custom');
             setNewTaskHour('09');
             setNewTaskMinute('00');
             setShowComposer(false);
-            
-            await notificationService.scheduleTaskNotification(task, dateKey);
-            
+
+            await notificationService.scheduleTaskNotification(createdTask, dateKey);
+
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } catch (error) {
             console.error('[CalendarTasks] save failed', error);
@@ -173,22 +222,29 @@ export default function CalendarTasksScreen() {
 
     //------This Function handles the Toggle Task---------
     async function toggleTask(id: string) {
-        //------This Function handles the Next Tasks---------
-        const nextTasks = tasks.map((task) => (
-            task.id === id
-                ? { ...task, completed: !task.completed }
-                : task
-        ));
+        const task = tasks.find((t) => t.id === id);
+        if (!task) return;
+
         try {
-            await persist(nextTasks);
-            
-            const updatedTask = nextTasks.find(t => t.id === id);
-            if (updatedTask?.completed) {
-                await notificationService.cancelTaskNotification(id);
-            } else if (updatedTask) {
-                await notificationService.scheduleTaskNotification(updatedTask, dateKey);
+            if (task.completed) {
+                await api.put(`/reminders/${id}`, { status: 'active' });
+            } else {
+                await api.post(`/reminders/${id}/complete`);
             }
-            
+
+            setTasks((prev) =>
+                prev.map((t) =>
+                    t.id === id ? { ...t, completed: !t.completed } : t,
+                ),
+            );
+
+            if (!task.completed) {
+                await notificationService.cancelTaskNotification(id);
+            } else {
+                const restored = { ...task, completed: false };
+                await notificationService.scheduleTaskNotification(restored, dateKey);
+            }
+
             Haptics.selectionAsync();
         } catch (error) {
             console.error('[CalendarTasks] toggle failed', error);
@@ -198,10 +254,9 @@ export default function CalendarTasksScreen() {
 
     //------This Function handles the Delete Task---------
     async function deleteTask(id: string) {
-        //------This Function handles the Next Tasks---------
-        const nextTasks = tasks.filter((task) => task.id !== id);
         try {
-            await persist(nextTasks);
+            await api.delete(`/reminders/${id}`);
+            setTasks((prev) => prev.filter((t) => t.id !== id));
             await notificationService.cancelTaskNotification(id);
             Haptics.selectionAsync();
         } catch (error) {
